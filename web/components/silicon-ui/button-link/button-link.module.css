@@ -1,0 +1,6 @@
+.link { text-decoration: none; transition-property: color, background, border-color, opacity, box-shadow, transform; }
+.link:hover { text-decoration: none; }
+.link:active { transform: scale(.97); transition-duration: var(--duration-instant); }
+.content { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-related); white-space: nowrap; }
+.content svg { flex: none; }
+@media (prefers-reduced-motion: reduce) { .link:active { transform: none; } }

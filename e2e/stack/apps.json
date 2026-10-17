@@ -1,0 +1,169 @@
+{
+  "_comment": "Silicon Calc's two apps on its local Silicon Accounts stack, in the shape of testkit/fake-apps.json (the POST /v1/internal/apps/sync body). calc: the web app, the service and the calc command line (email + mock Google/Apple sign-in, the device flow and public client for the CLI, email shared when the Carbon agrees). ting: the receiving app of Calc's App verification proof; the mock Ting verifies proofs with its credentials. Loaded by scripts/accounts-stack.sh with accounts-seed --force. Local, development-only secrets.",
+  "version": 1,
+  "apps": [
+    {
+      "app_id": "calc",
+      "name": "Silicon Calc",
+      "description": "Spreadsheets Carbons and Silicons work on together.",
+      "logo_url": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTgiIGZpbGw9IiNGRkZERjkiLz48ZyBmaWxsPSIjMTgxODE4Ij48cmVjdCB4PSIxNCIgeT0iMTQiIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgcng9IjQiLz48cmVjdCB4PSIzNCIgeT0iMTQiIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgcng9IjQiLz48cmVjdCB4PSIxNCIgeT0iMzQiIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgcng9IjQiLz48cmVjdCB4PSIzNCIgeT0iMzQiIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgcng9IjQiLz48L2c+PC9zdmc+",
+      "logo_dark_url": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTgiIGZpbGw9IiNGRkZERjkiLz48ZyBmaWxsPSIjMTgxODE4Ij48cmVjdCB4PSIxNCIgeT0iMTQiIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgcng9IjQiLz48cmVjdCB4PSIzNCIgeT0iMTQiIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgcng9IjQiLz48cmVjdCB4PSIxNCIgeT0iMzQiIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgcng9IjQiLz48cmVjdCB4PSIzNCIgeT0iMzQiIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgcng9IjQiLz48L2c+PC9zdmc+",
+      "homepage_url": "http://127.0.0.1:8731/",
+      "owner_id": "c:calcdev",
+      "owner_email": "calcdev@calc.test",
+      "secret": "sa_app_calc_ssk5fvSIq31Cuj0xJM51W2TlhwmWCx5TnF232aMb",
+      "status": "active",
+      "created_at": "2026-10-17T00:00:00.000Z",
+      "signin_defaults": {
+        "methods": {
+          "email": true,
+          "phone": false,
+          "google": true,
+          "apple": true
+        },
+        "method_order": [
+          "google",
+          "apple",
+          "email"
+        ],
+        "google": {
+          "mode": "managed",
+          "prompt": "select_account"
+        },
+        "apple": {
+          "mode": "managed"
+        },
+        "required_fields": [],
+        "optional_fields": [
+          "email"
+        ],
+        "allow_signup": true,
+        "remember_browser": true,
+        "device_flow": true,
+        "public_client": true,
+        "copy": {
+          "title": "Sign in to Silicon Calc",
+          "subtitle": "Spreadsheets for Carbons and Silicons.",
+          "terms_url": "https://teamofsilicons.com/legal/terms",
+          "privacy_url": "https://teamofsilicons.com/legal/privacy",
+          "support_email": "support@teamofsilicons.com"
+        },
+        "redirect_uris": [
+          "http://127.0.0.1:8731/auth/callback",
+          "http://127.0.0.1:8744/auth/callback",
+          "http://127.0.0.1:8745/auth/callback",
+          "http://127.0.0.1:8746/auth/callback",
+          "http://127.0.0.1:8747/auth/callback",
+          "http://127.0.0.1:8748/auth/callback",
+          "http://127.0.0.1:8749/auth/callback",
+          "http://127.0.0.1:8780/auth/callback",
+          "http://127.0.0.1:8781/auth/callback",
+          "http://127.0.0.1:8782/auth/callback",
+          "http://127.0.0.1:8783/auth/callback",
+          "http://127.0.0.1:8784/auth/callback",
+          "http://127.0.0.1:8785/auth/callback",
+          "http://127.0.0.1:8786/auth/callback",
+          "http://127.0.0.1:8787/auth/callback",
+          "http://127.0.0.1:8788/auth/callback",
+          "http://127.0.0.1:8789/auth/callback",
+          "http://localhost:8731/auth/callback",
+          "http://localhost:8744/auth/callback",
+          "http://localhost:8745/auth/callback",
+          "http://localhost:8746/auth/callback",
+          "http://localhost:8747/auth/callback",
+          "http://localhost:8748/auth/callback",
+          "http://localhost:8749/auth/callback",
+          "http://localhost:8780/auth/callback",
+          "http://localhost:8781/auth/callback",
+          "http://localhost:8782/auth/callback",
+          "http://localhost:8783/auth/callback",
+          "http://localhost:8784/auth/callback",
+          "http://localhost:8785/auth/callback",
+          "http://localhost:8786/auth/callback",
+          "http://localhost:8787/auth/callback",
+          "http://localhost:8788/auth/callback",
+          "http://localhost:8789/auth/callback"
+        ],
+        "allowed_origins": [
+          "http://127.0.0.1:8731",
+          "http://127.0.0.1:8744",
+          "http://127.0.0.1:8745",
+          "http://127.0.0.1:8746",
+          "http://127.0.0.1:8747",
+          "http://127.0.0.1:8748",
+          "http://127.0.0.1:8749",
+          "http://127.0.0.1:8780",
+          "http://127.0.0.1:8781",
+          "http://127.0.0.1:8782",
+          "http://127.0.0.1:8783",
+          "http://127.0.0.1:8784",
+          "http://127.0.0.1:8785",
+          "http://127.0.0.1:8786",
+          "http://127.0.0.1:8787",
+          "http://127.0.0.1:8788",
+          "http://127.0.0.1:8789",
+          "http://localhost:8731",
+          "http://localhost:8744",
+          "http://localhost:8745",
+          "http://localhost:8746",
+          "http://localhost:8747",
+          "http://localhost:8748",
+          "http://localhost:8749",
+          "http://localhost:8780",
+          "http://localhost:8781",
+          "http://localhost:8782",
+          "http://localhost:8783",
+          "http://localhost:8784",
+          "http://localhost:8785",
+          "http://localhost:8786",
+          "http://localhost:8787",
+          "http://localhost:8788",
+          "http://localhost:8789"
+        ],
+        "allowed_email_domains": []
+      }
+    },
+    {
+      "app_id": "ting",
+      "name": "Silicon Ting",
+      "description": "Notifications for Carbons and Silicons (the local stand-in that receives Calc's tings).",
+      "logo_url": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTgiIGZpbGw9IiNGRkZERjkiLz48Y2lyY2xlIGN4PSIzMiIgY3k9IjMwIiByPSIxNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMTgxODE4IiBzdHJva2Utd2lkdGg9IjUiLz48cmVjdCB4PSIyOCIgeT0iNDYiIHdpZHRoPSI4IiBoZWlnaHQ9IjYiIHJ4PSIzIiBmaWxsPSIjMTgxODE4Ii8+PC9zdmc+",
+      "logo_dark_url": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTgiIGZpbGw9IiNGRkZERjkiLz48Y2lyY2xlIGN4PSIzMiIgY3k9IjMwIiByPSIxNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMTgxODE4IiBzdHJva2Utd2lkdGg9IjUiLz48cmVjdCB4PSIyOCIgeT0iNDYiIHdpZHRoPSI4IiBoZWlnaHQ9IjYiIHJ4PSIzIiBmaWxsPSIjMTgxODE4Ii8+PC9zdmc+",
+      "homepage_url": "http://127.0.0.1:8735/",
+      "owner_id": "c:calcdev",
+      "owner_email": "calcdev@calc.test",
+      "secret": "sa_app_ting_9FmSXTpa73uPCOQewpTapEJ5S0Cb3A7b6ddfB2Zf",
+      "status": "active",
+      "created_at": "2026-10-17T00:00:00.000Z",
+      "signin_defaults": {
+        "methods": {
+          "email": true,
+          "phone": false,
+          "google": false,
+          "apple": false
+        },
+        "method_order": [
+          "email"
+        ],
+        "required_fields": [],
+        "optional_fields": [],
+        "allow_signup": true,
+        "remember_browser": true,
+        "copy": {
+          "title": "Sign in to Silicon Ting",
+          "subtitle": "Notifications for Carbons and Silicons.",
+          "terms_url": "https://teamofsilicons.com/legal/terms",
+          "privacy_url": "https://teamofsilicons.com/legal/privacy",
+          "support_email": "support@teamofsilicons.com"
+        },
+        "redirect_uris": [
+          "http://127.0.0.1:8735/auth/callback"
+        ],
+        "allowed_origins": [
+          "http://127.0.0.1:8735"
+        ],
+        "allowed_email_domains": []
+      }
+    }
+  ]
+}

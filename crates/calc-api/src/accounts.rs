@@ -2,6 +2,7 @@
 //! people see (cached, with the app's credentials).
 
 use std::{
+    collections::HashMap,
     num::NonZeroUsize,
     sync::Arc,
     time::{Duration, Instant},
@@ -177,6 +178,26 @@ impl Accounts {
             }
         }
         out
+    }
+
+    /// Many accounts by uuid, looked up a few at a time, as a map (each uuid once). The uuids are read before the
+    /// lookups start, so the answer's future holds no borrow of them (handlers stay `Send`).
+    pub fn get_map(
+        &self,
+        uuids: impl IntoIterator<Item = Uuid>,
+    ) -> impl std::future::Future<Output = HashMap<Uuid, Account>> + Send + '_ {
+        use futures::StreamExt as _;
+        let unique: Vec<Uuid> = {
+            let mut seen = std::collections::HashSet::new();
+            uuids.into_iter().filter(|u| seen.insert(*u)).collect()
+        };
+        async move {
+            futures::stream::iter(unique)
+                .map(|u| async move { (u, self.get(u).await) })
+                .buffer_unordered(8)
+                .collect::<HashMap<Uuid, Account>>()
+                .await
+        }
     }
 
     /// An account by its `c:`/`si:` id, or None when no account has it.

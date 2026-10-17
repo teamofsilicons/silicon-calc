@@ -1,0 +1,205 @@
+/* The grid: a canvas under a native scroller, the keyboard's textarea, and what floats over the cells. Light only. */
+.root {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #FFFFFF;
+  isolation: isolate;
+}
+
+.canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+}
+
+.scroller {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  outline: none;
+  overscroll-behavior: contain;
+  touch-action: pan-x pan-y;
+  cursor: cell;
+  z-index: 1;
+  scrollbar-width: auto;
+  scrollbar-color: color-mix(in oklab, var(--foreground) 26%, transparent) transparent;
+}
+
+.spacer {
+  width: 1px;
+  height: 1px;
+}
+
+/* The editor's look: the mirror paints the text (references in colour) under the textarea, whose own text is
+   transparent so only its caret and selection show. Both share every metric (set by the engine). */
+.input,
+.mirror {
+  position: absolute;
+  top: 0;
+  left: 0;
+  margin: 0;
+  border: 0;
+  padding: 0 4px;
+  box-sizing: border-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  tab-size: 4;
+  letter-spacing: normal;
+  font-variant-ligatures: none;
+  text-align: left;
+}
+
+.input {
+  z-index: 4;
+  resize: none;
+  outline: none;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--foreground);
+  -webkit-text-fill-color: transparent;
+}
+
+.input[data-editing="false"] {
+  opacity: 0;
+  pointer-events: none;
+  caret-color: transparent;
+}
+
+.input::selection {
+  background: color-mix(in oklab, var(--accent) 26%, transparent);
+}
+
+.mirror {
+  z-index: 3;
+  display: none;
+  pointer-events: none;
+  background: #FFFFFF;
+  color: var(--foreground);
+  box-shadow: 0 0 0 2px var(--accent), 0 4px 14px rgb(16 24 40 / .12);
+}
+
+.mirror [data-kind="string"] { color: #18703F; }
+.mirror [data-kind="func"] { color: #292929; }
+
+/* Function suggestions and the signature hint, under the editor. */
+.suggestions,
+.signature {
+  --sq-r: var(--radius-container);
+  --sq-fill: var(--surface-raised);
+  --sq-stroke: var(--border);
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 6;
+  margin: 0;
+  border: 1px solid var(--sq-stroke);
+  background: var(--sq-fill);
+  box-shadow: var(--shadow-floating);
+  font-size: var(--text-sm);
+}
+
+.suggestions {
+  width: 320px;
+  max-width: calc(100% - 16px);
+  padding: 4px;
+  list-style: none;
+}
+
+.suggestion {
+  display: grid;
+  gap: 1px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.suggestion[aria-selected="true"] {
+  background: var(--accent-subtle);
+}
+
+.suggestionName {
+  font-family: var(--font-mono);
+  font-size: .8125rem;
+  color: var(--foreground);
+}
+
+.suggestionSummary {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.signature {
+  display: grid;
+  gap: 2px;
+  max-width: min(420px, calc(100% - 16px));
+  padding: 8px 12px;
+}
+
+.signatureCode {
+  font-size: .8125rem;
+  color: var(--text-secondary);
+  white-space: normal;
+}
+
+.signatureCode strong {
+  color: var(--foreground);
+  font-weight: 600;
+}
+
+.signatureSummary {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+/* A comment's first lines while the pointer rests on its cell. */
+.preview {
+  --sq-r: var(--radius-container);
+  --sq-fill: var(--surface-raised);
+  --sq-stroke: var(--border);
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 6;
+  display: grid;
+  gap: 4px;
+  width: 260px;
+  padding: 10px 12px;
+  border: 1px solid var(--sq-stroke);
+  background: var(--sq-fill);
+  box-shadow: var(--shadow-floating);
+  text-align: left;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.previewMeta {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.previewAuthor {
+  font-weight: 500;
+  color: var(--foreground);
+}
+
+.previewTime,
+.previewReplies {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.previewBody {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

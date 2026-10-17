@@ -1,8 +1,27 @@
 [package]
 name = "silicon-calc-client"
+description = "Typed async Rust client for the Silicon Calc API: sheets, folders, sharing, cells, edits, live events, code, files, copies, versions, comments and search"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+keywords = ["silicon", "calc", "spreadsheet", "client"]
+categories = ["api-bindings"]
 publish = false
 
 [dependencies]
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+futures.workspace = true
+bytes.workspace = true
+url.workspace = true
+async-stream.workspace = true
+tokio = { workspace = true }
+tokio-util.workspace = true
+percent-encoding = "2"
+
+[dev-dependencies]
+axum.workspace = true
+tokio.workspace = true

@@ -1069,6 +1069,8 @@ fn finish(ctx: &mut Ctx<'_>, res: Res) -> Out {
                 Out::Spill(arr)
             }
         }
+        // A LAMBDA left uncalled: a cell can't show it (Excel shows #CALC!).
+        other => Out::Value(other.shown_error()),
     }
 }
 
@@ -1157,6 +1159,59 @@ impl Grid for View<'_> {
     fn random(&self) -> f64 {
         use rand::Rng as _;
         self.wb.rng.lock().map(|mut r| r.random::<f64>()).unwrap_or(0.5)
+    }
+
+    fn visit(&self, tab: TabId, rect: &Rect, f: &mut dyn FnMut(u32, u32, &Value) -> bool) {
+        let Some(t) = self.wb.tab(tab) else { return };
+        for row in rect.r1..=rect.r2 {
+            for col in rect.c1..=rect.c2 {
+                if !f(row, col, &t.value_at(row, col)) {
+                    return;
+                }
+            }
+        }
+    }
+
+    fn visit_kinds(&self, tab: TabId, rect: &Rect, f: &mut dyn FnMut(u32, u32, crate::formula::eval::Kind) -> bool) {
+        use crate::{formula::eval::Kind, model};
+        let Some(t) = self.wb.tab(tab) else { return };
+        for row in rect.r1..=rect.r2 {
+            for col in rect.c1..=rect.c2 {
+                let (tag, data) = t.raw_at(row, col);
+                let k = match tag {
+                    model::TAG_NUMBER => Kind::Number(f64::from_bits(data)),
+                    model::TAG_TEXT => Kind::Text,
+                    model::TAG_BOOL => Kind::Bool(data != 0),
+                    model::TAG_ERROR => Kind::Error(ErrorKind::from_code(data as u8)),
+                    _ => Kind::Empty,
+                };
+                if !f(row, col, k) {
+                    return;
+                }
+            }
+        }
+    }
+
+    fn hidden_rows(&self, tab: TabId) -> Vec<u32> {
+        let Some(t) = self.wb.tab(tab) else { return Vec::new() };
+        let mut out: Vec<u32> = t.hidden_rows.iter().filter_map(|&id| t.rows.pos_of(id)).collect();
+        out.sort_unstable();
+        out
+    }
+
+    fn formula_tree(&self, tab: TabId, row: u32, col: u32) -> Option<Arc<Expr>> {
+        let t = self.wb.tab(tab)?;
+        self.wb.groups.get(t.formula_at(row, col)?).map(|g| g.expr.clone())
+    }
+
+    fn col_width(&self, tab: TabId, col: u32) -> Option<f64> {
+        let t = self.wb.tab(tab)?;
+        t.col_widths.get(&t.cols.id_at(col)?).map(|&w| w as f64)
+    }
+
+    fn cell_style(&self, tab: TabId, row: u32, col: u32) -> Option<Style> {
+        let t = self.wb.tab(tab)?;
+        Some(self.wb.styles.get(t.cell_at(CellPos::new(row, col)).style).clone())
     }
 }
 

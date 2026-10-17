@@ -1,6 +1,6 @@
 [package]
 name = "calc-runner"
-description = "Runs SQL (DuckDB), Python and JavaScript against a sheet's tabs, sandboxed, and converts Parquet and Numbers files"
+description = "Runs SQL (DuckDB), Python and JavaScript against a sheet's tabs, sandboxed, and converts Parquet, Numbers and .xls files"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,3 +11,12 @@ calc-engine.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
+rand.workspace = true
+libc.workspace = true
+# DuckDB runs SQL in-process; parquet reads and writes Parquet, json gives SQL its JSON functions, appender-arrow
+# loads a tab into a table column by column.
+duckdb = { workspace = true, features = ["parquet", "json", "appender-arrow"] }
+
+[dev-dependencies]
+calamine.workspace = true

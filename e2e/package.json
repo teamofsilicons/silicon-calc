@@ -1,0 +1,14 @@
+{
+  "name": "silicon-calc-e2e",
+  "private": true,
+  "description": "Silicon Calc end to end: the local Silicon Accounts stack, the mock Silicon Ting, test accounts and the journeys. Plain Node (>= 24, TypeScript run natively); it uses the Silicon Accounts testkit from ../silicon-accounts and installs nothing.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "journeys": "node journeys/run.ts",
+    "mock-ting": "node mock-ting/server.ts",
+    "accounts": "node bin/accounts.ts"
+  }
+}

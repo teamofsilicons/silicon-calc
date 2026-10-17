@@ -3,20 +3,43 @@
 //! Routes: tabs, cells, edits, events, presence, versions, compare, restore, copies. See docs/API.md.
 //!
 //! The functions marked "contract" are called by other modules; keep their signatures.
+//!
+//! How it fits together:
+//! - `registry`: the open lines, one task each (`task`), loading (latest snapshot, then the operations after it),
+//!   unloading idle lines, saving on shutdown.
+//! - `apply`: applying one change inside a line's task, atomically, and describing what it changed.
+//! - `store`: the operations log, snapshots and cell history in Postgres and blob storage.
+//! - `edits`: the edit types of `POST {line}/edits`, turned into engine operations.
+//! - `view`: the JSON answers (tabs, cells, charts, protections).
+//! - `routes`, `events`, `versions`, `copies`: the HTTP routes.
+
+mod apply;
+mod copies;
+mod edits;
+mod events;
+mod registry;
+mod restore;
+mod routes;
+mod store;
+mod task;
+mod versions;
+mod view;
 
 use std::sync::Arc;
 
 use axum::Router;
 use calc_engine::{Workbook, snapshot};
-use serde_json::{Value, json};
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::{error::ApiResult, state::AppState};
 
+pub(crate) use registry::Shared;
+
 /// The open lines.
 #[derive(Clone, Default)]
 pub struct Registry {
-    _inner: Arc<()>,
+    pub(crate) inner: Arc<registry::Inner>,
 }
 
 impl Registry {
@@ -25,16 +48,31 @@ impl Registry {
     }
 
     /// Contract: the handle of an open line, loading it (latest snapshot + operations after it) if needed.
-    pub async fn open(&self, _state: &AppState, line_id: &str) -> ApiResult<LineHandle> {
-        Err(not_built(line_id))
+    pub async fn open(&self, state: &AppState, line_id: &str) -> ApiResult<LineHandle> {
+        registry::open(self, state, line_id).await
     }
 
     /// Saves every open line (on shutdown).
-    pub async fn shutdown(&self, _state: &AppState) {}
-}
+    pub async fn shutdown(&self, state: &AppState) {
+        registry::shutdown(self, state).await
+    }
 
-fn not_built(what: &str) -> crate::error::ApiError {
-    crate::error::ApiError::unavailable(format!("Lines are not built yet ({what})."), "Build the lines work item.")
+    /// Unloads an open line now if nothing holds it (no viewers, no handles in use), saving a snapshot first.
+    /// Answers whether it was unloaded.
+    pub async fn unload(&self, line_id: &str) -> bool {
+        registry::unload(self, line_id).await
+    }
+
+    /// Drops an open line without saving anything, as a restart would: the next open rebuilds it from its latest
+    /// snapshot and the operations after it.
+    pub async fn discard(&self, line_id: &str) {
+        registry::discard(self, line_id).await
+    }
+
+    /// The ids of the lines open right now.
+    pub fn open_lines(&self) -> Vec<String> {
+        registry::open_lines(self)
+    }
 }
 
 /// What kind of change an operation is, as history shows it.
@@ -62,6 +100,20 @@ impl OpKind {
             Self::Undo => "undo",
             Self::Redo => "redo",
         }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "create" => Self::Create,
+            "edit" => Self::Edit,
+            "import" => Self::Import,
+            "code" => Self::Code,
+            "merge" => Self::Merge,
+            "restore" => Self::Restore,
+            "undo" => Self::Undo,
+            "redo" => Self::Redo,
+            _ => return None,
+        })
     }
 }
 
@@ -109,21 +161,36 @@ pub enum LineEvent {
 pub struct LineHandle {
     pub line_id: Arc<str>,
     pub sheet_id: Arc<str>,
+    pub(crate) shared: Arc<registry::Shared>,
 }
 
 impl LineHandle {
-    /// Runs `f` on the line's current workbook and version.
-    pub async fn read<R: Send + 'static>(&self, _f: impl FnOnce(&Workbook, i64) -> R + Send + 'static) -> ApiResult<R> {
-        Err(not_built(&self.line_id))
+    /// Runs `f` on the line's current workbook and version. Reads never wait for the line's task; they wait only
+    /// while a change is being written into the workbook in memory.
+    pub async fn read<R: Send + 'static>(&self, f: impl FnOnce(&Workbook, i64) -> R + Send + 'static) -> ApiResult<R> {
+        self.shared.read(move |st| f(&st.wb, st.version)).await
     }
 
     /// Applies one change as one version, saves it, recalculates and tells viewers.
-    pub async fn apply(&self, _req: ApplyRequest) -> ApiResult<ApplyOutcome> {
-        Err(not_built(&self.line_id))
+    pub async fn apply(&self, req: ApplyRequest) -> ApiResult<ApplyOutcome> {
+        let job = task::Job::from_request(req);
+        self.shared.run(job).await
     }
 
     /// Tells everyone watching this line.
-    pub fn publish(&self, _event: LineEvent) {}
+    pub fn publish(&self, event: LineEvent) {
+        self.shared.publish(event);
+    }
+
+    /// The line's latest version.
+    pub fn version(&self) -> i64 {
+        self.shared.version()
+    }
+
+    /// How many viewers are watching this line's events.
+    pub fn viewers(&self) -> usize {
+        self.shared.events.receiver_count()
+    }
 }
 
 /// Contract: a line row.
@@ -157,16 +224,19 @@ pub async fn line_for(state: &AppState, sheet_id: &str, copy_id: Option<&str>) -
 }
 
 /// Contract: the workbook of a line as it was at `version` (nearest snapshot, then the operations after it).
-pub async fn workbook_at(_state: &AppState, line_id: &str, _version: i64) -> ApiResult<Workbook> {
-    Err(not_built(line_id))
+pub async fn workbook_at(state: &AppState, line_id: &str, version: i64) -> ApiResult<Workbook> {
+    let wb = versions::state_at(state, line_id, version).await?;
+    Ok(Arc::try_unwrap(wb).unwrap_or_else(|shared| (*shared).clone()))
 }
 
 pub fn router() -> Router<AppState> {
-    Router::new()
+    Router::new().merge(routes::router()).merge(versions::router()).merge(copies::router())
 }
 
 /// Unloads idle lines, writes due snapshots, reruns keep-updated code tabs.
-pub fn spawn_maintenance(_state: AppState) {}
+pub fn spawn_maintenance(state: AppState) {
+    registry::spawn_maintenance(state);
+}
 
 /// Contract: creates the main line of a new sheet holding `wb` (version 0), inside the caller's transaction.
 pub async fn create_main_line(
@@ -177,7 +247,7 @@ pub async fn create_main_line(
     wb: &Workbook,
 ) -> ApiResult<()> {
     let line = crate::ids::main_line(sheet_id);
-    let bytes = snapshot::encode(wb);
+    let (bytes, text) = store::blocking_ref(|| (snapshot::encode(wb), store::cell_text(wb)));
     let key = state.blobs.put(&bytes).await?;
     sqlx::query("insert into lines (id, sheet_id, is_main, head, created_by) values ($1, $2, true, 0, $3)")
         .bind(&line)
@@ -191,25 +261,34 @@ pub async fn create_main_line(
         .bind(bytes.len() as i64)
         .execute(&mut *conn)
         .await?;
+    // The sheet is searchable by its cells from the start (an opened file's data included).
+    sqlx::query("update sheets set search_text = left(title || E'\\n' || $2, 220000) where id = $1")
+        .bind(sheet_id)
+        .bind(&text)
+        .execute(&mut *conn)
+        .await?;
     Ok(())
 }
 
-/// Contract: docs/API.md `Tab` JSON for one tab.
+/// Contract: docs/API.md `Tab` JSON for one tab. `code.run_by` names the account by uuid only; answers fill it in
+/// with `resolve_tab_accounts`.
 pub fn tab_json(_wb: &Workbook, tab: &calc_engine::Tab, index: usize) -> Value {
-    tab_json_basic(tab, index)
+    view::tab_json(tab, index, tab.used_rect())
+}
+
+/// Fills in the `code.run_by` accounts of `Tab` JSON made by `tab_json` (one tab, or an array of them).
+pub async fn resolve_tab_accounts(state: &AppState, tabs: &mut Value) {
+    view::resolve_tab_accounts(state, tabs).await
 }
 
 /// Contract: the main line's version and tabs (docs/API.md `Tab`) for `GET /v1/sheets/{id}`.
 pub async fn sheet_tabs(state: &AppState, sheet_id: &str) -> ApiResult<(i64, Vec<Value>)> {
-    let line = crate::ids::main_line(sheet_id);
-    let row: Option<(i64, String)> =
-        sqlx::query_as("select seq, blob from snapshots where line_id = $1 order by seq desc limit 1")
-            .bind(&line)
-            .fetch_optional(&state.db)
-            .await?;
-    let Some((seq, blob)) = row else { return Ok((0, Vec::new())) };
-    let wb = snapshot::decode(&state.blobs.get(&blob).await?).map_err(crate::error::ApiError::internal)?;
-    Ok((seq, wb.tabs.iter().enumerate().map(|(i, t)| tab_json_basic(t, i)).collect()))
+    let line = state.lines.open(state, &crate::ids::main_line(sheet_id)).await?;
+    let (version, tabs) = line.shared.read(|st| (st.version, view::tabs_json(st))).await?;
+    let mut tabs = Value::Array(tabs);
+    view::resolve_tab_accounts(state, &mut tabs).await;
+    let Value::Array(tabs) = tabs else { unreachable!("built as an array") };
+    Ok((version, tabs))
 }
 
 /// Contract: the number of open copies of a sheet.
@@ -228,14 +307,4 @@ pub async fn head_version(state: &AppState, sheet_id: &str) -> ApiResult<i64> {
         .fetch_optional(&state.db)
         .await?;
     Ok(v.map(|v| v.0).unwrap_or(0))
-}
-
-fn tab_json_basic(t: &calc_engine::Tab, index: usize) -> Value {
-    let used = t.used_rect();
-    json!({
-        "id": t.id, "name": t.name, "index": index,
-        "rows": used.map_or(0, |r| r.r2 + 1).max(1000), "cols": used.map_or(0, |r| r.c2 + 1).max(26),
-        "used": used.map(|r| r.to_string()), "frozen_rows": t.frozen_rows, "frozen_cols": t.frozen_cols,
-        "color": t.color, "code": Value::Null,
-    })
 }

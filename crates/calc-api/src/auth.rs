@@ -1,7 +1,7 @@
 //! Who is calling: the bearer token, verified, as a `Caller`.
 //!
-//! The first time Calc sees an account it records it (with its verified email, when the sign-in shared one) and
-//! turns any pending email invites for that address into memberships.
+//! The first time Calc sees an account (and every ten minutes after) it records it, with its verified email when the
+//! sign-in shared one, and turns any pending email invites for that address into memberships.
 
 use std::{
     collections::HashMap,
@@ -97,19 +97,9 @@ async fn record_seen(state: &AppState, caller: &Caller) {
         return;
     }
     if let Some(email) = email {
-        // Invites to this address become memberships.
-        let moved = sqlx::query(
-            "with taken as (delete from invites where email = $1::citext returning item_kind, item_id, role, invited_by)
-             insert into members (item_kind, item_id, account, role, invited_by)
-             select item_kind, item_id, $2, role, invited_by from taken
-             on conflict (item_kind, item_id, account) do nothing",
-        )
-        .bind(&email)
-        .bind(caller.uuid)
-        .execute(&state.db)
-        .await;
-        if let Err(e) = moved {
-            tracing::warn!(error = %e, "turning invites into memberships failed");
+        // Invites to this address become memberships, and each new member hears about it through Ting.
+        if let Err(e) = crate::sharing::accept_invites(state, caller.uuid, &email).await {
+            tracing::warn!(error = %e.message, "turning invites into memberships failed");
         }
     }
 }

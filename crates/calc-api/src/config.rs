@@ -45,6 +45,9 @@ pub struct Config {
     pub allow_http: bool,
 }
 
+/// The most cells one edit request may change (docs/API.md, `/v1/meta` limits).
+pub const MAX_CELLS_PER_EDIT: usize = 200_000;
+
 fn var(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.trim().is_empty())
 }
@@ -91,5 +94,43 @@ impl Config {
             line_idle: Duration::from_secs(secs("CALC_LINE_IDLE_SECONDS", 600)?),
             allow_http,
         })
+    }
+}
+
+impl Config {
+    /// The web app's link to a sheet.
+    pub fn sheet_url(&self, sheet_id: &str) -> String {
+        format!("{}/s/{sheet_id}", self.web_url)
+    }
+
+    /// The web app's link to a folder.
+    pub fn folder_url(&self, folder_id: &str) -> String {
+        format!("{}/f/{folder_id}", self.web_url)
+    }
+
+    /// The web app's link to one place in a sheet: a copy, a tab, a range, a comment thread (each optional).
+    pub fn sheet_place_url(
+        &self,
+        sheet_id: &str,
+        copy_id: Option<&str>,
+        tab: Option<u32>,
+        range: Option<&str>,
+        thread: Option<&str>,
+    ) -> String {
+        let mut q = url::form_urlencoded::Serializer::new(String::new());
+        if let Some(c) = copy_id {
+            q.append_pair("copy", c);
+        }
+        if let Some(t) = tab {
+            q.append_pair("tab", &t.to_string());
+        }
+        if let Some(r) = range {
+            q.append_pair("range", r);
+        }
+        if let Some(t) = thread {
+            q.append_pair("thread", t);
+        }
+        let q = q.finish();
+        if q.is_empty() { self.sheet_url(sheet_id) } else { format!("{}?{q}", self.sheet_url(sheet_id)) }
     }
 }

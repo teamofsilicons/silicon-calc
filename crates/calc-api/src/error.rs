@@ -132,3 +132,101 @@ impl From<calc_engine::OpError> for ApiError {
         }
     }
 }
+
+impl ApiError {
+    /// The same error with another hint.
+    pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = hint.into();
+        self
+    }
+
+    /// 422 `invalid_field` for several fields at once.
+    pub fn invalid_fields(message: impl Into<String>, fields: Value) -> Self {
+        Self::new(StatusCode::UNPROCESSABLE_ENTITY, "invalid_field", message, "Fix the fields and try again.")
+            .with_details(json!({"fields": fields}))
+    }
+}
+
+/// The most a JSON body may hold (files go through the raw upload routes instead).
+pub const MAX_JSON_BODY: usize = 16 << 20;
+
+/// A JSON request body, read leniently: any content type is accepted (so `curl -d` works) and an empty body reads
+/// as `{}`. Problems answer in Calc's error shape instead of axum's plain text.
+pub struct JsonBody<T>(pub T);
+
+impl<S, T> axum::extract::FromRequest<S> for JsonBody<T>
+where
+    S: Send + Sync,
+    T: serde::de::DeserializeOwned,
+{
+    type Rejection = ApiError;
+
+    async fn from_request(req: axum::extract::Request, _state: &S) -> Result<Self, Self::Rejection> {
+        let bytes = axum::body::to_bytes(req.into_body(), MAX_JSON_BODY).await.map_err(|_| {
+            ApiError::too_large(
+                format!("This request's body is over {} MB, more than a JSON body may hold.", MAX_JSON_BODY >> 20),
+                "Send less at once, or upload files through the import routes.",
+            )
+        })?;
+        let text: &[u8] = if bytes.iter().all(u8::is_ascii_whitespace) { b"{}" } else { &bytes };
+        serde_json::from_slice(text).map(JsonBody).map_err(|e| json_problem(&e))
+    }
+}
+
+/// Turns a serde error into Calc's words, naming the field when serde does.
+pub fn json_problem(e: &serde_json::Error) -> ApiError {
+    use serde_json::error::Category;
+    let text = e.to_string();
+    let detail = text.split(" at line ").next().unwrap_or(&text).to_owned();
+    match e.classify() {
+        Category::Syntax | Category::Eof | Category::Io => ApiError::bad_request(
+            format!("This request's body isn't valid JSON ({detail})."),
+            "Send a JSON object, like {\"title\": \"Q3 revenue\"}, as described in docs/API.md.",
+        ),
+        Category::Data => {
+            let field = detail
+                .strip_prefix("missing field `")
+                .or_else(|| detail.strip_prefix("unknown field `"))
+                .and_then(|r| r.split('`').next())
+                .unwrap_or("body")
+                .to_owned();
+            let message = if detail.starts_with("missing field") {
+                format!("The field \"{field}\" is missing.")
+            } else {
+                format!("This request's body doesn't fit: {detail}.")
+            };
+            ApiError::invalid_field(&field, message)
+        }
+    }
+}
+
+/// Query parameters, with problems answered in Calc's error shape.
+pub struct QueryParams<T>(pub T);
+
+impl<S, T> axum::extract::FromRequestParts<S> for QueryParams<T>
+where
+    S: Send + Sync,
+    T: serde::de::DeserializeOwned,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut axum::http::request::Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let q = parts.uri.query().unwrap_or("");
+        serde_urlencoded_like(q).map(QueryParams)
+    }
+}
+
+fn serde_urlencoded_like<T: serde::de::DeserializeOwned>(q: &str) -> Result<T, ApiError> {
+    axum::extract::Query::<T>::try_from_uri(&format!("/?{q}").parse::<axum::http::Uri>().map_err(|_| {
+        ApiError::bad_request("This request's query string can't be read.", "Check the URL's ?name=value parts.")
+    })?)
+    .map(|axum::extract::Query(v)| v)
+    .map_err(|e| {
+        let text = e.body_text();
+        let detail = text.trim_start_matches("Failed to deserialize query string: ").to_owned();
+        ApiError::bad_request(
+            format!("This request's query string doesn't fit: {detail}."),
+            "Check the URL's ?name=value parts against docs/API.md.",
+        )
+    })
+}

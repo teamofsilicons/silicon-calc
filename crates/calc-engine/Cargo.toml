@@ -13,11 +13,16 @@ thiserror.workspace = true
 csv.workspace = true
 calamine.workspace = true
 rust_xlsxwriter.workspace = true
-zip.workspace = true
-quick-xml.workspace = true
 rmp-serde.workspace = true
 zstd.workspace = true
 ahash.workspace = true
 rand.workspace = true
+# File formats: the same zip and XML versions calamine and rust_xlsxwriter use, so each is built once.
+zip = { version = "8.6", default-features = false, features = ["deflate"] }
+quick-xml = "0.41"
+# CSV/TSV in UTF-16 and Windows-1252.
+encoding_rs = "0.8"
+# PDF content streams.
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 
 [dev-dependencies]

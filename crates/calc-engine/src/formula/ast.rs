@@ -75,6 +75,8 @@ pub enum BinaryOp {
     Range,
     /// The space operator.
     Intersect,
+    /// The union operator: `(A1:B2,D1:E2)`, written as a comma inside parentheses.
+    Union,
 }
 
 impl BinaryOp {
@@ -94,6 +96,7 @@ impl BinaryOp {
             Self::Ge => ">=",
             Self::Range => ":",
             Self::Intersect => " ",
+            Self::Union => ",",
         }
     }
 
@@ -104,6 +107,7 @@ impl BinaryOp {
             Self::Add | Self::Sub => 3,
             Self::Mul | Self::Div => 4,
             Self::Pow => 5,
+            Self::Union => 7,
             Self::Intersect => 8,
             Self::Range => 9,
         }
@@ -130,6 +134,8 @@ pub enum Expr {
     Call(Arc<str>, Vec<Expr>),
     Array(Vec<Vec<Expr>>),
     Paren(Box<Expr>),
+    /// Calling what an expression evaluates to (a LAMBDA): `LAMBDA(x,x+1)(2)`.
+    Invoke(Box<Expr>, Vec<Expr>),
 }
 
 impl Expr {
@@ -144,6 +150,10 @@ impl Expr {
             }
             Self::Call(_, args) => args.iter().for_each(|a| a.walk(f)),
             Self::Array(rows) => rows.iter().flatten().for_each(|a| a.walk(f)),
+            Self::Invoke(callee, args) => {
+                callee.walk(f);
+                args.iter().for_each(|a| a.walk(f));
+            }
             _ => {}
         }
     }
@@ -157,19 +167,46 @@ impl Expr {
             Self::Binary(op, a, b) => Self::Binary(*op, Box::new(a.map_refs(f)), Box::new(b.map_refs(f))),
             Self::Call(n, args) => Self::Call(n.clone(), args.iter().map(|a| a.map_refs(f)).collect()),
             Self::Array(rows) => Self::Array(rows.iter().map(|r| r.iter().map(|a| a.map_refs(f)).collect()).collect()),
+            Self::Invoke(callee, args) => {
+                Self::Invoke(Box::new(callee.map_refs(f)), args.iter().map(|a| a.map_refs(f)).collect())
+            }
             other => other.clone(),
         }
     }
 
     /// Whether evaluating it can give a different answer with nothing changed (NOW, RAND, INDIRECT, OFFSET…).
     pub fn is_volatile(&self) -> bool {
+        // Names bound inside the formula itself (LET names, LAMBDA parameters) can't be redefined from outside.
+        let mut local: Vec<&str> = Vec::new();
+        self.walk(&mut |e| {
+            if let Expr::Call(name, args) = e {
+                let bound: Box<dyn Iterator<Item = &Expr>> = match name.as_ref() {
+                    "LET" => Box::new(args.iter().step_by(2).take(args.len() / 2)),
+                    "LAMBDA" => Box::new(args.iter().take(args.len().saturating_sub(1))),
+                    _ => Box::new(std::iter::empty()),
+                };
+                for b in bound {
+                    if let Expr::Name(n) = b {
+                        local.push(n);
+                    }
+                }
+            }
+        });
         let mut volatile = false;
         self.walk(&mut |e| {
+            // A call to something that isn't a built-in function is a call to a LAMBDA kept in a defined name,
+            // which can be redefined.
             if let Expr::Call(name, _) = e
-                && matches!(
+                && !super::functions::is_known(name)
+                && !local.iter().any(|l| l.eq_ignore_ascii_case(name))
+            {
+                volatile = true;
+            }
+            if let Expr::Call(name, args) = e
+                && (matches!(
                     name.as_ref(),
                     "NOW" | "TODAY" | "RAND" | "RANDBETWEEN" | "RANDARRAY" | "INDIRECT" | "OFFSET" | "CELL" | "INFO"
-                )
+                ) || reads_hidden_rows(name, args))
             {
                 volatile = true;
             }
@@ -179,5 +216,20 @@ impl Expr {
             }
         });
         volatile
+    }
+}
+
+/// SUBTOTAL(101…111, …) and AGGREGATE with options that skip hidden rows answer differently when rows are hidden or
+/// shown, which changes no cell: they recalculate with every change, like volatile functions.
+fn reads_hidden_rows(name: &str, args: &[Expr]) -> bool {
+    let code = |i: usize| match args.get(i) {
+        Some(Expr::Number(n)) => Some(*n),
+        Some(Expr::Missing) => Some(0.0),
+        _ => None,
+    };
+    match name {
+        "SUBTOTAL" => code(0).is_none_or(|n| n >= 100.0),
+        "AGGREGATE" => code(1).is_none_or(|n| matches!(n.trunc() as i64, 1 | 3 | 5 | 7)),
+        _ => false,
     }
 }

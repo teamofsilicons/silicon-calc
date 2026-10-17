@@ -15,7 +15,6 @@ path = "src/main.rs"
 
 [dependencies]
 calc-engine.workspace = true
-calc-runner.workspace = true
 calc-ting.workspace = true
 silicon-accounts-client.workspace = true
 axum.workspace = true

@@ -458,10 +458,41 @@ impl Parser<'_, '_> {
                         _ => return Err(self.err("# can only follow a cell, like A1#.")),
                     };
                 }
+                // Calling a LAMBDA right where it is written: LAMBDA(x,x+1)(2).
+                Some(Tok::LParen) if matches!(e, Expr::Call(..) | Expr::Paren(..) | Expr::Invoke(..)) => {
+                    self.bump();
+                    let args = self.arguments("LAMBDA")?;
+                    e = Expr::Invoke(Box::new(e), args);
+                }
                 _ => break,
             }
         }
         Ok(e)
+    }
+
+    /// A call's arguments after its `(`, through the closing `)`. Empty arguments are `Missing`.
+    fn arguments(&mut self, name: &str) -> Result<Vec<Expr>, ParseError> {
+        let mut args = Vec::new();
+        if self.peek() == Some(&Tok::RParen) {
+            self.bump();
+            return Ok(args);
+        }
+        loop {
+            if matches!(self.peek(), Some(Tok::Comma) | Some(Tok::RParen)) {
+                args.push(Expr::Missing);
+            } else {
+                args.push(self.expr(0)?);
+            }
+            match self.bump() {
+                Some(Tok::Comma) => continue,
+                Some(Tok::RParen) => break,
+                _ => {
+                    self.pos = self.pos.saturating_sub(1);
+                    return Err(self.err(format!("{name}( is missing a , between arguments or its closing ).")));
+                }
+            }
+        }
+        Ok(args)
     }
 
     fn reference(&self, tab: Option<String>, r: RefTok) -> Result<Expr, ParseError> {
@@ -498,7 +529,13 @@ impl Parser<'_, '_> {
             Tok::Ref { tab, r } => self.reference(tab, r)?,
             Tok::Name(n) => Expr::Name(Arc::from(n.as_str())),
             Tok::LParen => {
-                let e = self.expr(0)?;
+                let mut e = self.expr(0)?;
+                // A comma inside parentheses is the union operator: (A1:B2,D1:E2).
+                while self.peek() == Some(&Tok::Comma) {
+                    self.bump();
+                    let rhs = self.expr(0)?;
+                    e = Expr::Binary(BinaryOp::Union, Box::new(e), Box::new(rhs));
+                }
                 match self.bump() {
                     Some(Tok::RParen) => Expr::Paren(Box::new(e)),
                     _ => {
@@ -509,26 +546,7 @@ impl Parser<'_, '_> {
             }
             Tok::Func(name) => {
                 self.bump(); // (
-                let mut args = Vec::new();
-                if self.peek() == Some(&Tok::RParen) {
-                    self.bump();
-                } else {
-                    loop {
-                        if matches!(self.peek(), Some(Tok::Comma) | Some(Tok::RParen)) {
-                            args.push(Expr::Missing);
-                        } else {
-                            args.push(self.expr(0)?);
-                        }
-                        match self.bump() {
-                            Some(Tok::Comma) => continue,
-                            Some(Tok::RParen) => break,
-                            _ => {
-                                self.pos = self.pos.saturating_sub(1);
-                                return Err(self.err(format!("{name}( is missing a , between arguments or its closing ).")));
-                            }
-                        }
-                    }
-                }
+                let args = self.arguments(&name)?;
                 Expr::Call(Arc::from(name.as_str()), args)
             }
             Tok::LBrace => {
@@ -758,6 +776,17 @@ fn write_expr(e: &Expr, out: &mut String, refs: &mut dyn FnMut(&Expr, &mut Strin
             }
             out.push(')');
         }
+        Expr::Invoke(callee, args) => {
+            write_expr(callee, out, refs);
+            out.push('(');
+            for (i, a) in args.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_expr(a, out, refs);
+            }
+            out.push(')');
+        }
         Expr::Array(rows) => {
             out.push('{');
             for (i, r) in rows.iter().enumerate() {
@@ -826,6 +855,10 @@ mod tests {
             "#N/A",
             "SUM(A1:INDEX(B:B,3))",
             "STDEV.S(A1:A9)",
+            "LAMBDA(x,x+1)(A1)",
+            "LET(f,LAMBDA(a,b,a*b),f(2,3))",
+            "SUM((A1:B2,D1:E2))",
+            "INDEX((A1:B2,D1:E2,G1),1,1,2)",
         ] {
             assert_eq!(roundtrip(f), f);
         }

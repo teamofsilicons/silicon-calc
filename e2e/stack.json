@@ -1,0 +1,122 @@
+{
+  "_comment": "The local stack for Silicon Calc (scripts/accounts-stack.sh writes it): Silicon Accounts with its mocks, Calc's apps on it (calc, ting) with their development-only secrets, and where the dev service, web app and mock Ting run. Local and fake.",
+  "written_at": "2026-10-17T03:39:51.538Z",
+  "accounts": {
+    "public_url": "http://localhost:9990",
+    "api_url": "http://127.0.0.1:9989",
+    "mock_oidc_url": "http://127.0.0.1:9991",
+    "mock_messaging_url": "http://127.0.0.1:9992",
+    "fake_apps_url": "http://127.0.0.1:9993",
+    "mock_iris_url": "http://127.0.0.1:9994",
+    "apps_api_url": "http://127.0.0.1:9996",
+    "database_url": "postgres://postgres@127.0.0.1:5482/silicon_accounts_calc",
+    "checkout": "/Users/codanium/Documents/silicon/silicon-accounts",
+    "cli": "/Users/codanium/Documents/silicon/silicon-accounts/target/integration/debug/silicon-accounts",
+    "logs": "/Users/codanium/Documents/silicon/silicon-accounts/.dev/logs/9990"
+  },
+  "apps": {
+    "calc": {
+      "app_id": "calc",
+      "app_secret": "sa_app_calc_ssk5fvSIq31Cuj0xJM51W2TlhwmWCx5TnF232aMb",
+      "redirect_uris": [
+        "http://127.0.0.1:8731/auth/callback",
+        "http://127.0.0.1:8744/auth/callback",
+        "http://127.0.0.1:8745/auth/callback",
+        "http://127.0.0.1:8746/auth/callback",
+        "http://127.0.0.1:8747/auth/callback",
+        "http://127.0.0.1:8748/auth/callback",
+        "http://127.0.0.1:8749/auth/callback",
+        "http://127.0.0.1:8780/auth/callback",
+        "http://127.0.0.1:8781/auth/callback",
+        "http://127.0.0.1:8782/auth/callback",
+        "http://127.0.0.1:8783/auth/callback",
+        "http://127.0.0.1:8784/auth/callback",
+        "http://127.0.0.1:8785/auth/callback",
+        "http://127.0.0.1:8786/auth/callback",
+        "http://127.0.0.1:8787/auth/callback",
+        "http://127.0.0.1:8788/auth/callback",
+        "http://127.0.0.1:8789/auth/callback",
+        "http://localhost:8731/auth/callback",
+        "http://localhost:8744/auth/callback",
+        "http://localhost:8745/auth/callback",
+        "http://localhost:8746/auth/callback",
+        "http://localhost:8747/auth/callback",
+        "http://localhost:8748/auth/callback",
+        "http://localhost:8749/auth/callback",
+        "http://localhost:8780/auth/callback",
+        "http://localhost:8781/auth/callback",
+        "http://localhost:8782/auth/callback",
+        "http://localhost:8783/auth/callback",
+        "http://localhost:8784/auth/callback",
+        "http://localhost:8785/auth/callback",
+        "http://localhost:8786/auth/callback",
+        "http://localhost:8787/auth/callback",
+        "http://localhost:8788/auth/callback",
+        "http://localhost:8789/auth/callback"
+      ],
+      "allowed_origins": [
+        "http://127.0.0.1:8731",
+        "http://127.0.0.1:8744",
+        "http://127.0.0.1:8745",
+        "http://127.0.0.1:8746",
+        "http://127.0.0.1:8747",
+        "http://127.0.0.1:8748",
+        "http://127.0.0.1:8749",
+        "http://127.0.0.1:8780",
+        "http://127.0.0.1:8781",
+        "http://127.0.0.1:8782",
+        "http://127.0.0.1:8783",
+        "http://127.0.0.1:8784",
+        "http://127.0.0.1:8785",
+        "http://127.0.0.1:8786",
+        "http://127.0.0.1:8787",
+        "http://127.0.0.1:8788",
+        "http://127.0.0.1:8789",
+        "http://localhost:8731",
+        "http://localhost:8744",
+        "http://localhost:8745",
+        "http://localhost:8746",
+        "http://localhost:8747",
+        "http://localhost:8748",
+        "http://localhost:8749",
+        "http://localhost:8780",
+        "http://localhost:8781",
+        "http://localhost:8782",
+        "http://localhost:8783",
+        "http://localhost:8784",
+        "http://localhost:8785",
+        "http://localhost:8786",
+        "http://localhost:8787",
+        "http://localhost:8788",
+        "http://localhost:8789"
+      ],
+      "device_flow": true,
+      "public_client": true
+    },
+    "ting": {
+      "app_id": "ting",
+      "app_secret": "sa_app_ting_9FmSXTpa73uPCOQewpTapEJ5S0Cb3A7b6ddfB2Zf",
+      "redirect_uris": [
+        "http://127.0.0.1:8735/auth/callback"
+      ],
+      "allowed_origins": [
+        "http://127.0.0.1:8735"
+      ],
+      "device_flow": false,
+      "public_client": false
+    }
+  },
+  "calc": {
+    "api_url": "http://127.0.0.1:8730",
+    "web_url": "http://127.0.0.1:8731",
+    "database_url": "postgres://postgres@127.0.0.1:5482/silicon_calc",
+    "blob_dir": ".dev/blobs"
+  },
+  "ting": {
+    "url": "http://127.0.0.1:8735",
+    "ws_url": "ws://127.0.0.1:8735/v1/ws?protocol=v1",
+    "app_id": "ting",
+    "issuing_app": "calc",
+    "scope": "tings.send"
+  }
+}
