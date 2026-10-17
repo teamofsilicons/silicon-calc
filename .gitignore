@@ -1,0 +1,10 @@
+/target
+/.dev
+node_modules
+.next*
+/web/test-results
+/web/playwright-report
+/web/screens
+.env.local
+*.log
+__pycache__

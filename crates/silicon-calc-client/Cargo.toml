@@ -1,0 +1,8 @@
+[package]
+name = "silicon-calc-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]

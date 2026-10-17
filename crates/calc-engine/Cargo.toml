@@ -1,0 +1,23 @@
+[package]
+name = "calc-engine"
+description = "Silicon Calc's spreadsheet engine: the workbook, formulas, recalculation, history operations, diff and merge, and file formats"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+csv.workspace = true
+calamine.workspace = true
+rust_xlsxwriter.workspace = true
+zip.workspace = true
+quick-xml.workspace = true
+rmp-serde.workspace = true
+zstd.workspace = true
+ahash.workspace = true
+rand.workspace = true
+
+[dev-dependencies]
