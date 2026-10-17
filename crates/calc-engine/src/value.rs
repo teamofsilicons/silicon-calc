@@ -4,8 +4,8 @@ use std::{cmp::Ordering, fmt, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 
-/// An Excel error value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// An Excel error value. Serialized as its text (`#DIV/0!`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum ErrorKind {
     Null = 1,
@@ -82,6 +82,19 @@ impl ErrorKind {
             Self::Calc => 14.0,
             Self::Circ => 3.0,
         }
+    }
+}
+
+impl Serialize for ErrorKind {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ErrorKind {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Self::parse(&s).ok_or_else(|| serde::de::Error::custom(format!("{s} is not an error value")))
     }
 }
 

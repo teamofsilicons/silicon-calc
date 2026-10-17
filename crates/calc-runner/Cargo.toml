@@ -1,0 +1,13 @@
+[package]
+name = "calc-runner"
+description = "Runs SQL (DuckDB), Python and JavaScript against a sheet's tabs, sandboxed, and converts Parquet and Numbers files"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+calc-engine.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

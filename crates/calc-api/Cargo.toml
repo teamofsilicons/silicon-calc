@@ -1,8 +1,49 @@
 [package]
 name = "calc-api"
+description = "The Silicon Calc service"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
 
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "calc-api"
+path = "src/main.rs"
+
 [dependencies]
+calc-engine.workspace = true
+calc-runner.workspace = true
+calc-ting.workspace = true
+silicon-accounts-client.workspace = true
+axum.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tokio-stream.workspace = true
+async-stream.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+tower-http.workspace = true
+uuid.workspace = true
+time.workspace = true
+rand.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+futures.workspace = true
+bytes.workspace = true
+url.workspace = true
+lru.workspace = true
+rmp-serde.workspace = true
+zstd.workspace = true
+sha2.workspace = true
+hex.workspace = true
+base64.workspace = true
+
+[dev-dependencies]
+ed25519-dalek = "2"

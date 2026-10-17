@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/calc-engine", "crates/calc-api", "crates/silicon-calc-client", "crates/calc-cli"]
+members = ["crates/calc-engine", "crates/calc-runner", "crates/calc-ting", "crates/calc-api", "crates/silicon-calc-client", "crates/calc-cli"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,6 +11,8 @@ rust-version = "1.90"
 
 [workspace.dependencies]
 calc-engine = { path = "crates/calc-engine" }
+calc-runner = { path = "crates/calc-runner" }
+calc-ting = { path = "crates/calc-ting" }
 silicon-calc-client = { path = "crates/silicon-calc-client" }
 silicon-accounts-client = "0.6"
 axum = { version = "0.8", features = ["ws", "macros", "multipart"] }
@@ -32,6 +34,9 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 futures = "0.3"
+tokio-stream = { version = "0.1", features = ["sync"] }
+async-stream = "0.3"
+lru = "0.16"
 csv = "1"
 calamine = "0.36"
 rust_xlsxwriter = "0.99"
