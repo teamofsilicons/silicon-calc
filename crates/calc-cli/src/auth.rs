@@ -10,7 +10,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use silicon_accounts_client::{DevicePoll, TokenResponse};
 
-use crate::ctx::{Ctx, DOCS_URL, REPOSITORY_URL, WEB_URL};
+use crate::ctx::{Ctx, WEB_URL};
 use crate::error::{CliError, CliResult, SIGN_IN_HINT};
 use crate::session::{APP_ID, Session, accounts_client, revoke, rfc3339};
 
@@ -454,7 +454,7 @@ fn readable_status(session: &Session, ctx: &Ctx, verified: bool, problem: Option
         out.push_str(&format!("sign-in ends  {}\n", crate::output::when(&rfc3339(at))));
     }
     out.push_str(&format!("service       {} ({})\n", ctx.api_url, ctx.api_url_source));
-    out.push_str(&format!("accounts      {}\n", session.accounts_url));
+    out.push_str(&format!("accounts      {} ({})\n", session.accounts_url, ctx.accounts_url_source));
     out.push_str(&format!("session file  {}\n", ctx.store.path().display()));
     match (verified, problem) {
         (true, _) => out.push_str("checked       just now with Silicon Calc\n"),
@@ -528,7 +528,7 @@ pub async fn whoami(ctx: &Ctx) -> CliResult<()> {
 }
 
 /// `accounts --json`: how Silicon Calc signs in. Offline: no network, nothing written, never fails.
-pub fn accounts(json_mode: bool, api_url: Option<String>, accounts_url: Option<String>) -> Value {
+pub fn accounts(api_url: Option<String>, accounts_url: Option<String>) -> Value {
     let stored = crate::session::home().ok().and_then(|(dir, _)| crate::session::Store::new(dir).load().ok().flatten());
     let pick = |flag: Option<String>, from: Option<String>, default: &str| {
         flag.map(|u| u.trim().trim_end_matches('/').to_owned())
@@ -538,7 +538,6 @@ pub fn accounts(json_mode: bool, api_url: Option<String>, accounts_url: Option<S
     };
     let api = pick(api_url, stored.as_ref().map(|s| s.api_url.clone()), crate::ctx::DEFAULT_API_URL);
     let acc = pick(accounts_url, stored.as_ref().map(|s| s.accounts_url.clone()), crate::ctx::DEFAULT_ACCOUNTS_URL);
-    let _ = json_mode;
     json!({
         "app_id": APP_ID,
         "client_id": APP_ID,
@@ -558,10 +557,28 @@ pub fn accounts(json_mode: bool, api_url: Option<String>, accounts_url: Option<S
         "client": "silicon-accounts-client",
         "rust_package": "silicon-calc-client",
         "install": "silicon-apps install calc",
-        "repository_url": REPOSITORY_URL,
-        "docs_url": DOCS_URL,
+        "guide_command": "calc docs",
         "telemetry": false,
     })
+}
+
+/// `accounts` without `--json`: the same, readable.
+pub fn accounts_text(v: &Value) -> String {
+    let s = |key: &str| v.get(key).and_then(Value::as_str).unwrap_or("").to_owned();
+    let sign_in = |key: &str| v.pointer(&format!("/sign_in/{key}")).and_then(Value::as_str).unwrap_or("").to_owned();
+    let mut out = format!("{} (app id {}), calc {}\n", s("name"), s("app_id"), s("version"));
+    let mut row = |k: &str, val: String| out.push_str(&format!("{k:<15}{val}\n"));
+    row("service", s("api_url"));
+    row("accounts", s("accounts_url"));
+    row("web app", s("web_url"));
+    row("Carbons", format!("{}  (approve a code in the browser)", sign_in("carbon")));
+    row("Silicons", format!("{}  (si:id and STK)", sign_in("silicon")));
+    row("", format!("{}  (a short-lived token)", sign_in("silicon_with_token")));
+    row("signed in?", s("status"));
+    row("install", s("install"));
+    row("guide", s("guide_command"));
+    row("telemetry", "none: calc records and sends nothing about how it is used".into());
+    out
 }
 
 #[cfg(test)]
@@ -582,9 +599,15 @@ mod tests {
 
     #[test]
     fn accounts_json_names_the_app() {
-        let v = accounts(true, Some("http://127.0.0.1:8730/".into()), None);
+        let v = accounts(Some("http://127.0.0.1:8730/".into()), Some("http://127.0.0.1:9989".into()));
         assert_eq!(v["app_id"], "calc");
         assert_eq!(v["api_url"], "http://127.0.0.1:8730");
+        assert_eq!(v["accounts_url"], "http://127.0.0.1:9989");
         assert_eq!(v["public_client"], true);
+        assert_eq!(v["telemetry"], false);
+        let text = accounts_text(&v);
+        assert!(text.starts_with("Silicon Calc (app id calc), calc "), "{text}");
+        assert!(text.contains("service        http://127.0.0.1:8730\n"), "{text}");
+        assert!(text.contains("calc login --silicon si:you --stk-stdin"), "{text}");
     }
 }

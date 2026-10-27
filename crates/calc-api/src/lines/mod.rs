@@ -14,14 +14,15 @@
 //! - `routes`, `events`, `versions`, `copies`: the HTTP routes.
 
 mod apply;
+mod ctx;
 mod copies;
+mod restore;
 mod edits;
 mod events;
 mod registry;
-mod restore;
 mod routes;
 mod store;
-mod task;
+pub(crate) mod task;
 mod versions;
 mod view;
 
@@ -33,8 +34,6 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::{error::ApiResult, state::AppState};
-
-pub(crate) use registry::Shared;
 
 /// The open lines.
 #[derive(Clone, Default)]
@@ -67,6 +66,15 @@ impl Registry {
     /// snapshot and the operations after it.
     pub async fn discard(&self, line_id: &str) {
         registry::discard(self, line_id).await
+    }
+
+    /// Recheck every open reader when the sheet's public-link policy changes.
+    pub fn access_changed(&self, sheet: &str) {
+        for slot in self.inner.slots.lock().expect("slots lock").values() {
+            if let registry::Slot::Open(handle) = slot {
+                if handle.sheet_id.as_ref() == sheet { handle.publish(LineEvent::AccessChanged); }
+            }
+        }
     }
 
     /// The ids of the lines open right now.
@@ -141,13 +149,14 @@ pub struct ApplyOutcome {
     /// docs/API.md `Overwrite` objects.
     pub overwrote: Vec<Value>,
     pub skipped: usize,
-    /// The tabs whose contents changed (for keep-updated code tabs).
+    /// The tabs whose contents changed.
     pub tabs_changed: Vec<calc_engine::TabId>,
 }
 
 /// Contract: what viewers of a line are told (each becomes one server-sent event: `event: <name>`).
 #[derive(Clone, Debug)]
 pub enum LineEvent {
+    AccessChanged,
     Change(Value),
     Presence(Value),
     Comment(Value),
@@ -174,6 +183,14 @@ impl LineHandle {
     /// Applies one change as one version, saves it, recalculates and tells viewers.
     pub async fn apply(&self, req: ApplyRequest) -> ApiResult<ApplyOutcome> {
         let job = task::Job::from_request(req);
+        self.shared.run(job).await
+    }
+
+    /// Applies a result computed from one exact workbook version. A stale browser snapshot
+    /// is rejected before building or writing the operation, inside the serialized line task.
+    pub async fn apply_at_version(&self, req: ApplyRequest, expected_version: i64) -> ApiResult<ApplyOutcome> {
+        let mut job = task::Job::from_request(req);
+        job.expect_version = Some(expected_version);
         self.shared.run(job).await
     }
 
@@ -230,15 +247,16 @@ pub async fn workbook_at(state: &AppState, line_id: &str, version: i64) -> ApiRe
 }
 
 pub fn router() -> Router<AppState> {
-    Router::new().merge(routes::router()).merge(versions::router()).merge(copies::router())
+    Router::new().merge(routes::router()).merge(events::router()).merge(versions::router()).merge(copies::router()).merge(restore::router())
 }
 
-/// Unloads idle lines, writes due snapshots, reruns keep-updated code tabs.
+/// Unloads idle lines and writes due snapshots.
 pub fn spawn_maintenance(state: AppState) {
     registry::spawn_maintenance(state);
 }
 
-/// Contract: creates the main line of a new sheet holding `wb` (version 0), inside the caller's transaction.
+/// Contract: creates the main line of a new sheet holding `wb` (version 0), inside the caller's transaction. The
+/// sheet's search text is written with the sheet's row (`sheets::create_sheet`) and refreshed with each snapshot.
 pub async fn create_main_line(
     state: &AppState,
     conn: &mut sqlx::PgConnection,
@@ -247,7 +265,7 @@ pub async fn create_main_line(
     wb: &Workbook,
 ) -> ApiResult<()> {
     let line = crate::ids::main_line(sheet_id);
-    let (bytes, text) = store::blocking_ref(|| (snapshot::encode(wb), store::cell_text(wb)));
+    let bytes = store::blocking_ref(|| snapshot::encode(wb));
     let key = state.blobs.put(&bytes).await?;
     sqlx::query("insert into lines (id, sheet_id, is_main, head, created_by) values ($1, $2, true, 0, $3)")
         .bind(&line)
@@ -259,12 +277,6 @@ pub async fn create_main_line(
         .bind(&line)
         .bind(&key)
         .bind(bytes.len() as i64)
-        .execute(&mut *conn)
-        .await?;
-    // The sheet is searchable by its cells from the start (an opened file's data included).
-    sqlx::query("update sheets set search_text = left(title || E'\\n' || $2, 220000) where id = $1")
-        .bind(sheet_id)
-        .bind(&text)
         .execute(&mut *conn)
         .await?;
     Ok(())

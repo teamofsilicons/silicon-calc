@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { type Sheet, at, plain } from '../lib/calc.ts';
 import { tag } from '../lib/accounts.ts';
 import { journey } from '../lib/journey.ts';
+import { needs } from '../lib/steps.ts';
 import { type CarbonPerson, type SiliconPerson, world } from '../lib/world.ts';
 
 export default journey('Folders, shared folders, Silicons owning sheets, and transfers', (j) => {
@@ -20,6 +21,7 @@ export default journey('Folders, shared folders, Silicons owning sheets, and tra
   let tab: number;
   let notes: Sheet;
   let since = 0;
+  let hasData = false;
 
   const head = async (sheet: string) => (await ada.api.get(`/v1/sheets/${sheet}/tabs`)).version;
 
@@ -31,12 +33,16 @@ export default journey('Folders, shared folders, Silicons owning sheets, and tra
     const sub = await ada.api.post('/v1/folders', { json: { name: '2026', parent_id: finance.id } }, 201);
     budget = await ada.api.post<Sheet>('/v1/sheets', { json: { title: 'Q3 budget', folder_id: sub.id } }, 201);
     tab = (await ada.api.get<Sheet>(`/v1/sheets/${budget.id}`)).tabs![0]!.id;
-    await ada.api.edit(budget.id, [{ type: 'set', tab, at: 'A1', rows: [['line', 'amount'], ['rent', '1200']] }]);
     const f = await ada.api.get(`/v1/folders/${sub.id}`);
     assert.deepEqual(f.path.map((x: any) => x.name), ['Finance'], 'the folder knows its path');
     assert.ok(f.sheets.some((s: Sheet) => s.id === budget.id));
     const top = await ada.api.get(`/v1/folders/${finance.id}`);
     assert.ok(top.folders.some((x: any) => x.id === sub.id));
+  });
+
+  j.check('the Carbon writes the budget', async () => {
+    await ada.api.edit(budget.id, [{ type: 'set', tab, at: 'A1', rows: [['line', 'amount'], ['rent', '1200']] }]);
+    hasData = true;
   });
 
   j.step('the Carbon shares the folder with the Silicon as a viewer; the Silicon is told', async () => {
@@ -47,21 +53,28 @@ export default journey('Folders, shared folders, Silicons owning sheets, and tra
     assert.ok(JSON.stringify(t.data).includes(finance.id), `the ting names the folder (${JSON.stringify(t.data).slice(0, 300)})`);
   });
 
-  j.step('the Silicon reads the sheet in the folder, but can\'t change it', async () => {
+  j.step('the Silicon reads the sheet in the folder, as a viewer', async () => {
     const s = await si.api.get<Sheet>(`/v1/sheets/${budget.id}`);
     assert.equal(s.role, 'viewer', 'the folder\'s role reaches the sheets in it, in its subfolders too');
-    assert.equal(plain(at(await si.api.cells(budget.id, tab, 'B2'), 'B2')), 1200);
+    if (hasData) assert.equal(plain(at(await si.api.cells(budget.id, tab, 'B2'), 'B2')), 1200);
+  });
+
+  j.check('as a viewer through the folder, the Silicon can\'t change the sheet', async () => {
     await si.api.refused('POST', `/v1/sheets/${budget.id}/edits`, { json: { base_version: await head(budget.id), edits: [{ type: 'set', tab, cells: [{ a: 'B2', input: '1' }] }] } }, 403, 'not_allowed');
   });
 
-  j.step('as an editor of the folder, the Silicon edits, and the sheet\'s sharing says where its role comes from', async () => {
+  j.step('as an editor of the folder, the Silicon is an editor of the sheet, and the sheet\'s sharing says where its role comes from', async () => {
     await ada.api.patch(`/v1/folders/${finance.id}/sharing/${si.uuid}`, { json: { role: 'editor' } });
-    await si.api.edit(budget.id, [{ type: 'set', tab, cells: [{ a: 'B3', input: '=B2*2' }] }]);
-    assert.equal(plain(at(await ada.api.cells(budget.id, tab, 'B3'), 'B3')), 2400);
     const sharing = await ada.api.get(`/v1/sheets/${budget.id}/sharing`);
     const m = sharing.members.find((x: any) => x.account.uuid === si.uuid);
     assert.equal(m?.role, 'editor');
     assert.equal(m?.via?.folder?.id, finance.id, `the role comes through the folder (${JSON.stringify(m?.via)})`);
+  });
+
+  j.check('as an editor through the folder, the Silicon changes the sheet', async () => {
+    needs(hasData, 'the budget was not written (see that check)');
+    await si.api.edit(budget.id, [{ type: 'set', tab, cells: [{ a: 'B3', input: '=B2*2' }] }]);
+    assert.equal(plain(at(await ada.api.cells(budget.id, tab, 'B3'), 'B3')), 2400);
   });
 
   j.step('a sheet the Silicon makes in the Carbon\'s folder belongs to the folder\'s owner', async () => {
@@ -85,11 +98,15 @@ export default journey('Folders, shared folders, Silicons owning sheets, and tra
     assert.equal(t.data.sheet?.id, notes.id);
   });
 
-  j.step('the Carbon comments on the Silicon\'s sheet, can\'t edit it, and the Silicon is told', async () => {
-    const ntab = (await grace.api.get<Sheet>(`/v1/sheets/${notes.id}`)).tabs![0]!.id;
+  let ntab = 0;
+  j.step('the Carbon comments on the Silicon\'s sheet, and the Silicon, its owner, is told', async () => {
+    ntab = (await grace.api.get<Sheet>(`/v1/sheets/${notes.id}`)).tabs![0]!.id;
     await grace.api.post(`/v1/sheets/${notes.id}/comments`, { json: { tab: ntab, range: 'A1', body: 'Can you add the Q3 totals here?' } }, 201);
     const t = await w.ting.wait({ for: si.uuid, type: 'calc.comment.created', after: since });
     assert.equal(t.data.comment?.author?.id, grace.id);
+  });
+
+  j.check('as a commenter, the Carbon can\'t edit the Silicon\'s sheet', async () => {
     const v = (await grace.api.get(`/v1/sheets/${notes.id}/tabs`)).version;
     await grace.api.refused('POST', `/v1/sheets/${notes.id}/edits`, { json: { base_version: v, edits: [{ type: 'set', tab: ntab, cells: [{ a: 'A1', input: 'x' }] }] } }, 403, 'not_allowed');
   });

@@ -1,11 +1,17 @@
-# Silicon web kit
+# Silicon Calc web
+
+Calc's runtime setup is in [.env.example](.env.example); production packaging, domain registration and proxy
+requirements are in [PRODUCTION.md](PRODUCTION.md). The implementation uses Silicon UI and a light-only grid editor.
+The inherited kit reference below describes the BFF architecture; its demo commands and ports are historical.
+
+## Web kit architecture reference
 
 The template every Silicon app's web frontend is built from. Copy it into an app's `web/`, edit one file
 (`lib/app.config.ts`), and the app has:
 
-- **The Silicon look** of the developer site, the account site and the store: BDO Grotesk (self-hosted) over the system
-  text face, the light `#F7F8FA`/`#292929` and dark `#02040A`/`#F7F8FA` palettes with brand blue `#1F5FB8` for actions,
-  squircles on every rounded surface, and a light, dark or system theme that is remembered and never flashes.
+- **The Silicon look**: self-hosted Paper Mono throughout, Silicon UI's neutral light palette with white surfaces,
+  neutral gray borders and charcoal actions,
+  squircles on every rounded surface, and one light theme.
 - **Arc UI** (uiarc.dev): every free component, vendored with the Silicon edits, and `@uiarc` registered for the shadcn
   CLI so more can be added.
 - **A signed-in workspace**: a sidebar with the app's sections (a menu sheet on phones), a top bar with ⌘K search, the
@@ -228,5 +234,5 @@ settings with switches and sharing.
 The look, the theme store, the squircles, the foundation components, the BFF (seal, session, routes, proxy) and the
 public site components are adapted from the Silicon developer site (`silicon-accounts/developer`); the code block, the
 highlighter and the Open Graph fonts from the store (`silicon-apps/store`). Arc UI is MIT (copyright 2026 Elia Kuratli,
-`vendor/uiarc/LICENSE`); only its Free components are in the kit (`vendor/uiarc/PROVENANCE.md`). BDO Grotesk is under
-the SIL Open Font License 1.1 (`public/fonts/bdo-grotesk/OFL.txt`, `assets/og/OFL.txt`).
+`vendor/uiarc/LICENSE`); only its Free components are in the kit (`vendor/uiarc/PROVENANCE.md`). Paper Mono is under
+the SIL Open Font License 1.1 (`public/fonts/paper-mono/v1.000/OFL.txt`, `assets/og/paper-mono/OFL.txt`).

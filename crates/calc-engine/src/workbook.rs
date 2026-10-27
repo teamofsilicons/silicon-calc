@@ -207,6 +207,9 @@ pub struct Workbook {
     pub charts: Vec<Chart>,
     pub protections: Vec<Protection>,
     pub settings: Settings,
+    pub functions: Vec<crate::javascript::Function>,
+    pub javascript: Mutex<crate::javascript::State>,
+    pub(crate) format_stats: Mutex<std::collections::BTreeMap<(TabId,String),(f64,f64)>>,
     pub(crate) groups: Groups,
     pub(crate) spills: HashMap<(TabId, RowId, ColId), SpillInfo>,
     tab_index: HashMap<TabId, usize>,
@@ -227,6 +230,9 @@ impl Clone for Workbook {
             charts: self.charts.clone(),
             protections: self.protections.clone(),
             settings: self.settings.clone(),
+            functions: self.functions.clone(),
+            javascript: Mutex::new(self.javascript.lock().unwrap().clone()),
+            format_stats: Mutex::default(),
             groups: self.groups.clone(),
             spills: self.spills.clone(),
             tab_index: self.tab_index.clone(),
@@ -266,6 +272,9 @@ impl Workbook {
             charts: Vec::new(),
             protections: Vec::new(),
             settings: Settings::default(),
+            functions: Vec::new(),
+            javascript: Mutex::default(),
+            format_stats: Mutex::default(),
             groups: Groups::default(),
             spills: HashMap::new(),
             tab_index: HashMap::new(),
@@ -1080,6 +1089,11 @@ pub(crate) struct View<'a> {
 }
 
 impl Grid for View<'_> {
+    fn has_javascript(&self, name: &str) -> bool { self.wb.function(name).is_some() }
+    fn javascript(&self, name: &str, tab: u32, row: u32, col: u32, args: Vec<serde_json::Value>) -> Res {
+        self.wb.javascript_call(name, tab, row, col, args)
+    }
+
     fn value(&self, tab: TabId, row: u32, col: u32) -> Value {
         self.wb.tab(tab).map(|t| t.value_at(row, col)).unwrap_or_default()
     }
@@ -1383,4 +1397,16 @@ mod tests {
         put(&mut wb, t2, "B2", "6");
         assert_eq!(get(&wb, t1, "A1"), Value::Number(12.0));
     }
+}
+
+/// A conditional formula anchored at the range's top-left, evaluated for another cell.
+pub fn evaluate_relative(wb: &Workbook, tab: TabId, row: u32, col: u32, text: &str, anchor_row: u32, anchor_col: u32) -> Result<Value, ParseError> {
+    let expr = parse_formula(text.trim().trim_start_matches('='), anchor_row, anchor_col, &wb.names())?;
+    let mut unsafe_call = false;
+    expr.walk(&mut |e| if let Expr::Call(name,_) = e { if !crate::formula::functions::is_known(name) { unsafe_call = true; } });
+    if unsafe_call { return Ok(Value::Error(ErrorKind::Name)); }
+    let view = View { wb };
+    let mut ctx = Ctx::new(&view, tab, row, col);
+    let result = ctx.eval(&expr);
+    Ok(ctx.to_scalar(result))
 }

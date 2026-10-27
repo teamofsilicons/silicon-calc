@@ -25,7 +25,7 @@ pub fn parse_format(s: &str) -> CliResult<Format> {
     Format::parse(s).ok_or_else(|| {
         CliError::usage(
             format!("\"{s}\" is not a format Silicon Calc writes."),
-            "Use xlsx, xls, ods, numbers, csv, tsv, json, parquet or pdf.",
+            "Use xlsx, ods, pdf, html, csv, tsv, xls, numbers, json or parquet.",
         )
     })
 }
@@ -55,7 +55,7 @@ pub async fn download(ctx: &Ctx, a: DownloadArgs) -> CliResult<()> {
     let format = pick_format(a.format.as_deref(), a.output.as_deref())?;
     if a.formulas && format != Format::Json {
         return Err(CliError::usage(
-            "--formulas works with --format json; the other formats that can hold formulas always keep them.",
+            "--formulas works with --format json. Spreadsheet downloads keep compatible formulas and use calculated values for JavaScript.",
             "Add --format json, or drop --formulas.",
         ));
     }

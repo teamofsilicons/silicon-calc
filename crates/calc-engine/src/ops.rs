@@ -93,6 +93,8 @@ pub struct TabContent {
     pub hidden_cols: Vec<u32>,
     #[serde(default)]
     pub code: Option<CodeSource>,
+    #[serde(default)]
+    pub format_rules: Vec<crate::conditional::PositionRule>,
 }
 
 /// One column of a `TabContent`.
@@ -143,11 +145,13 @@ pub struct TabProps {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frozen_cols: Option<u32>,
     /// `Some(None)` removes the colour.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::style::double_option")]
     pub color: Option<Option<String>>,
     /// `Some(None)` turns a code-made tab into an ordinary one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::style::double_option")]
     pub code: Option<Option<CodeSource>>,
+    #[serde(default)]
+    pub format_rules: Option<Vec<crate::conditional::Rule>>,
 }
 
 /// One change to a workbook.
@@ -183,6 +187,8 @@ pub enum Op {
     Merge { tab: TabId, area: IdRect },
     Unmerge { tab: TabId, area: IdRect },
     SetNames { names: Vec<DefinedName> },
+    SetFunctions { functions: Vec<crate::javascript::Function> },
+    JavascriptResults { epoch: u64, results: Vec<(u64, crate::javascript::Answer)> },
     PutChart { chart: Chart },
     DeleteChart { id: String },
     PutProtection { protection: Protection },
@@ -340,6 +346,7 @@ impl Workbook {
             hidden_rows: pos_list(&t.hidden_rows, &t.rows),
             hidden_cols: pos_list(&t.hidden_cols, &t.cols),
             code: t.code.clone(),
+            format_rules: t.format_rules.iter().filter_map(|r| Some(crate::conditional::PositionRule {id:r.id.clone(),range:t.pos_rect(&r.area)?,kind:r.kind.clone()})).collect(),
         })
     }
 
@@ -365,6 +372,9 @@ impl Workbook {
 
     /// Applies one operation and recalculates.
     pub fn apply(&mut self, op: &Op, actor: &Actor<'_>) -> Result<Applied, OpError> {
+        let reads_tabs = self.javascript.lock().unwrap().calls.iter().any(|c| c.result.as_ref().and_then(|a| a.dependencies.as_ref()).is_some_and(|d| d.tabs));
+        let tab_metadata = |wb: &Workbook| wb.tabs.iter().map(|t| (t.id, t.name.clone(), t.used_rect())).collect::<Vec<_>>();
+        let mut metadata = reads_tabs.then(|| tab_metadata(self));
         self.set_clock(actor.at as f64);
         let mut out = Applied::default();
         let inverse = self.apply_inner(op, actor, &mut out)?;
@@ -372,7 +382,33 @@ impl Workbook {
         let changes = std::mem::take(&mut out.changes.cells);
         // Big writes are reported as their bounding rectangle per tab.
         let changes = if changes.len() > 50_000 { bounding(&changes) } else { changes };
+        {
+            let mut js = self.javascript.lock().unwrap();
+            if !matches!(op, Op::JavascriptResults { .. }) { js.epoch += 1; }
+            if resets_javascript(op) { js.calls.clear(); js.bytes = 0; }
+            else if changes_javascript_inputs(op) { js.invalidate_reads(&changes, out.changes.tab_list, true); }
+            js.used.clear();
+        }
+        self.format_stats.lock().unwrap().clear();
         out.recalc = self.recalc(changes.clone());
+        // A range read can depend on a normal formula or another JavaScript result.
+        // Propagate actual value changes until every cached read is up to date.
+        let mut changed = out.recalc.clone();
+        loop {
+            let next_metadata = metadata.as_ref().map(|_| tab_metadata(self));
+            let metadata_changed = metadata != next_metadata;
+            metadata = next_metadata;
+            let mut reads: Vec<_> = changed.cells.iter().map(|&(t,r,c)| (t, Rect::new(r,c,r,c))).collect();
+            reads.extend(changed.overflow.iter().map(|&t| (t, Rect::new(0,0,MAX_ROWS-1,MAX_COLS-1))));
+            if !self.javascript.lock().unwrap().invalidate_reads(&reads, metadata_changed, false) { break; }
+            self.javascript.lock().unwrap().used.clear();
+            changed = self.recalc(Vec::new());
+            out.recalc.cells.extend(&changed.cells);
+            out.recalc.overflow.extend(&changed.overflow);
+            out.recalc.evaluated += changed.evaluated;
+        }
+        self.javascript.lock().unwrap().prune();
+        out.changes.tabs_reload.extend(self.tabs.iter().filter(|t|!t.format_rules.is_empty()).map(|t|t.id));
         out.changes.cells = changes;
         out.changes.tabs_reload.sort_unstable();
         out.changes.tabs_reload.dedup();
@@ -408,6 +444,7 @@ impl Workbook {
                 Ok(Some(Op::SetCells { tab: *tab, cells: inverse }))
             }
             Op::StyleArea { tab, area, patch } => {
+                patch.validate().map_err(OpError::Invalid)?;
                 let t = self.tab_or(*tab)?;
                 let Some(rect) = t.pos_rect(area) else { return Ok(None) };
                 let rect = clamp_rect(rect, t);
@@ -422,10 +459,14 @@ impl Workbook {
                         if new == old {
                             continue;
                         }
-                        inverse.push(CellWrite { row: rid, col: cid, style: Some(old), ..Default::default() });
+                        inverse.push(self.capture_cell(*tab, rid, cid));
+                        let initial = if cell.value.is_empty() && cell.formula.is_none() && patch.control.is_some() {
+                            new.control.as_ref().and_then(|control| control.unchecked_value())
+                        } else { None };
                         let id = self.styles.intern(new);
                         let t = self.tab_mut(*tab).expect("checked");
                         t.set_style_by_id(rid, cid, id);
+                        if let Some(value) = initial { t.set_value_by_id(rid, cid, &value, false, Some(meta)); }
                         t.set_meta_by_id(rid, cid, meta);
                     }
                 }
@@ -455,7 +496,9 @@ impl Workbook {
                     let (r, c) = (t.rows.pos_of(rid).expect("exists"), t.cols.pos_of(cid).expect("exists"));
                     let w = match what {
                         ClearWhat::Contents => CellWrite { row: rid, col: cid, clear: true, ..Default::default() },
-                        ClearWhat::Formats => CellWrite { row: rid, col: cid, style: Some(Style::default()), ..Default::default() },
+                        ClearWhat::Formats => CellWrite { row: rid, col: cid, style: Some(Style {
+                            control: before.style.as_ref().and_then(|s| s.control.clone()), ..Default::default()
+                        }), ..Default::default() },
                         ClearWhat::All => CellWrite { row: rid, col: cid, clear: true, style: Some(Style::default()), ..Default::default() },
                     };
                     self.write_cell(*tab, &w, (r, c), Some(meta))?;
@@ -698,6 +741,10 @@ impl Workbook {
                 Ok(Some(Op::ReplaceTab { tab: *tab, content: Box::new(previous) }))
             }
             Op::TabProps { tab, props } => {
+                if let Some(rules)=&props.format_rules {
+                    if rules.len()>100 {return Err(OpError::Invalid("Use at most 100 formatting rules per tab.".into()));}
+                    for rule in rules {rule.kind.validate().map_err(OpError::Invalid)?;}
+                }
                 let t = self.tab_mut_or(*tab)?;
                 let mut inv = TabProps::default();
                 if let Some(f) = props.frozen_rows {
@@ -712,6 +759,7 @@ impl Workbook {
                 if let Some(c) = &props.code {
                     inv.code = Some(std::mem::replace(&mut t.code, c.clone()));
                 }
+                if let Some(rules)=&props.format_rules { inv.format_rules=Some(std::mem::replace(&mut t.format_rules,rules.clone())); out.changes.tabs_reload.push(*tab); }
                 out.changes.tab_list = true;
                 Ok(Some(Op::TabProps { tab: *tab, props: inv }))
             }
@@ -773,6 +821,36 @@ impl Workbook {
                 t.merges.retain(|m| m != area);
                 out.changes.tabs_reload.push(*tab);
                 Ok((t.merges.len() != before).then(|| Op::Merge { tab: *tab, area: area.clone() }))
+            }
+            Op::SetFunctions { functions } => {
+                if functions.len() > 256 { return Err(OpError::Invalid("A sheet may hold at most 256 JavaScript functions.".into())); }
+                let mut keys=std::collections::HashSet::new();
+                for f in functions { if !keys.insert((f.name.to_ascii_uppercase(),f.account.clone())) {
+                    return Err(OpError::Invalid(format!("The JavaScript function {} already has a different definition. Import this workbook as a new sheet, or rename the existing function first.",f.name)));
+                } }
+                for f in functions { f.validate().map_err(OpError::Invalid)?; }
+                let old = std::mem::replace(&mut self.functions, functions.clone());
+                out.changes.meta = true;
+                self.dirty_all_volatile_names();
+                Ok(Some(Op::SetFunctions { functions: old }))
+            }
+            Op::JavascriptResults { epoch, results } => {
+                for (_, answer) in results { answer.validate().map_err(OpError::Invalid)?; }
+                {
+                    let mut state = self.javascript.lock().unwrap();
+                    if state.epoch != *epoch { return Err(OpError::Invalid("The JavaScript inputs changed. Recalculate with the latest values.".into())); }
+                    if results.iter().any(|(id,_)| !state.calls.iter().any(|c| c.id == *id && c.result.is_none())) {
+                        return Err(OpError::Invalid("This JavaScript call is no longer pending.".into()));
+                    }
+                    let bytes=serde_json::to_vec(results).map_or(usize::MAX,|s|s.len());
+                    if state.bytes.saturating_add(bytes)>32*1024*1024 {return Err(OpError::Invalid("The JavaScript calculation is too large. Use smaller ranges or results.".into()));}
+                    state.bytes += bytes;
+                    for (id, answer) in results {
+                        state.calls.iter_mut().find(|c| c.id == *id).unwrap().result = Some(answer.clone());
+                    }
+                }
+                self.dirty_all_volatile_names();
+                Ok(None)
             }
             Op::SetNames { names } => {
                 let old = std::mem::replace(&mut self.names, names.clone());
@@ -888,7 +966,12 @@ impl Workbook {
         }
         let mut implied_format: Option<String> = None;
         if let Some(input) = &w.input {
-            match parse_entry(input) {
+            let current = self.tab(tab).expect("tab").cell_by_id(rid, cid).style;
+            let plain = w.style_patch.as_ref().and_then(|p| p.num_fmt.as_ref())
+                .map(|f| f.as_deref() == Some("@"))
+                .unwrap_or_else(|| w.style.as_ref().unwrap_or(self.styles.get(current)).num_fmt.as_deref() == Some("@"));
+            let entry = if plain && !input.is_empty() { Entry::Text(input.strip_prefix('\'').unwrap_or(input).to_owned()) } else { parse_entry(input) };
+            match entry {
                 Entry::Formula(f) => {
                     self.put_formula(tab, rid, cid, &f, pos).map_err(|e| OpError::Formula {
                         cell: CellPos::new(pos.0, pos.1).to_string(),
@@ -925,6 +1008,7 @@ impl Workbook {
             self.tab_mut(tab).expect("tab").set_style_by_id(rid, cid, id);
         }
         if let Some(p) = &w.style_patch {
+            p.validate().map_err(OpError::Invalid)?;
             let cur = self.tab(tab).expect("tab").cell_by_id(rid, cid).style;
             let new = p.apply(self.styles.get(cur));
             let id = self.styles.intern(new);
@@ -1017,6 +1101,7 @@ impl Workbook {
         t.frozen_rows = content.frozen_rows;
         t.frozen_cols = content.frozen_cols;
         t.code = content.code.clone();
+        t.format_rules = content.format_rules.iter().map(|r| crate::conditional::Rule {id:r.id.clone(),area:t.id_rect(&r.range),kind:r.kind.clone()}).collect();
         let merges: Vec<IdRect> = content.merges.iter().filter_map(|m| {
             Some(IdRect { r1: t.rows.id_at(m.r1)?, c1: t.cols.id_at(m.c1)?, r2: t.rows.id_at(m.r2)?, c2: t.cols.id_at(m.c2)? })
         }).collect();
@@ -1079,15 +1164,17 @@ impl Workbook {
 
     /// An id rectangle for a position rectangle, with the `Extend` it needs.
     fn area_ids(&self, tab: TabId, rect: Rect) -> Result<(IdRect, Option<Op>), OpError> {
+        if rect.r1>rect.r2 || rect.c1>rect.c2 || rect.r2>=MAX_ROWS || rect.c2>=MAX_COLS {return Err(OpError::Invalid("The range is outside the grid.".into()));}
         let t = self.tab_or(tab)?;
         // Whole columns and rows stop at the cells that exist.
-        let r2 = rect.r2.min(t.rows.len().max(rect.r1 + 1).saturating_sub(1).max(rect.r1));
-        let c2 = rect.c2.min(t.cols.len().max(rect.c1 + 1).saturating_sub(1).max(rect.c1));
+        let r2 = if rect.r2 == MAX_ROWS - 1 { t.rows.len().saturating_sub(1).max(rect.r1) } else { rect.r2 };
+        let c2 = if rect.c2 == MAX_COLS - 1 { t.cols.len().saturating_sub(1).max(rect.c1) } else { rect.c2 };
         let (a, b) = (self.peek_ids(tab, rect.r1, rect.c1).expect("tab"), self.peek_ids(tab, r2, c2).expect("tab"));
         Ok((IdRect { r1: a.0, c1: a.1, r2: b.0, c2: b.1 }, self.extend_for(tab, r2 + 1, c2 + 1)))
     }
 
     pub fn prepare_style(&self, tab: TabId, rect: Rect, patch: StylePatch) -> Result<Op, OpError> {
+        patch.validate().map_err(OpError::Invalid)?;
         let (area, ext) = self.area_ids(tab, rect)?;
         let op = Op::StyleArea { tab, area, patch };
         Ok(match ext {
@@ -1291,6 +1378,28 @@ impl Workbook {
             Op::Batch { ops } => ops.iter().find_map(|o| self.protection_blocking(o, account, owner)),
             _ => None,
         }
+    }
+}
+
+/// Structural edits can change addresses, context, helper definitions or tab lookup.
+fn resets_javascript(op: &Op) -> bool {
+    match op {
+        Op::Batch { ops } => ops.iter().any(resets_javascript),
+        Op::InsertRows { .. } | Op::InsertCols { .. } | Op::DeleteRows { .. } | Op::DeleteCols { .. }
+        | Op::RestoreRows { .. } | Op::RestoreCols { .. } | Op::Reorder { .. } | Op::AddTab { .. }
+        | Op::DeleteTab { .. } | Op::RestoreTab { .. } | Op::RenameTab { .. } | Op::MoveTab { .. }
+        | Op::ReplaceTab { .. } | Op::SetFunctions { .. } | Op::SetNames { .. } | Op::Settings { .. } => true,
+        _ => false,
+    }
+}
+
+fn changes_javascript_inputs(op: &Op) -> bool {
+    match op {
+        Op::Batch { ops } => ops.iter().any(changes_javascript_inputs),
+        Op::SetCells { cells, .. } => cells.iter().any(|c| c.clear || c.input.is_some() || c.formula.is_some() || c.value.is_some() || c.style_patch.as_ref().is_some_and(|s| s.control.is_some())),
+        Op::ClearArea { what, .. } => *what != ClearWhat::Formats,
+        Op::StyleArea { patch, .. } => patch.control.is_some(),
+        _ => resets_javascript(op),
     }
 }
 

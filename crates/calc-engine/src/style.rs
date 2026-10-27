@@ -2,6 +2,60 @@
 
 use serde::{Deserialize, Serialize};
 
+/// In-cell input controls. Kept in the interned cell presentation so fills, copies,
+/// snapshots and undo carry the rule with the cell. Clearing its look retains it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CellControl {
+    Checkbox {
+        /// Absent means real boolean values, rather than the text "TRUE"/"FALSE".
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        checked: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unchecked: Option<String>,
+    },
+    Dropdown { options: Vec<String> },
+    Person,
+    File,
+    Rating,
+}
+
+impl CellControl {
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Person | Self::File | Self::Rating => {},
+            Self::Checkbox { checked, unchecked } => {
+                if checked.is_none() && unchecked.is_some() {
+                    return Err("Set both custom checkbox values, or use TRUE and FALSE.".into());
+                }
+                if checked.as_ref().is_some_and(|s| s.len() > 256 || s == unchecked.as_deref().unwrap_or(""))
+                    || unchecked.as_ref().is_some_and(|s| s.len() > 256)
+                {
+                    return Err("Use different checkbox values, each at most 256 characters.".into());
+                }
+            }
+            Self::Dropdown { options } => {
+                let unique: std::collections::HashSet<_> = options.iter().collect();
+                if options.is_empty() || options.len() > 100 || unique.len() != options.len()
+                    || options.iter().any(|s| s.trim().is_empty() || s.len() > 256)
+                {
+                    return Err("Add 1 to 100 distinct dropdown options, each at most 256 characters.".into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn unchecked_value(&self) -> Option<crate::value::Value> {
+        match self {
+            Self::Checkbox { checked: None, .. } => Some(crate::value::Value::Bool(false)),
+            Self::Checkbox { unchecked, .. } => Some(crate::value::Value::from(unchecked.clone().unwrap_or_default())),
+            Self::Rating => Some(crate::value::Value::Number(0.0)),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HAlign {
@@ -70,6 +124,14 @@ pub struct Style {
     pub v_align: VAlign,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub wrap: bool,
+    /// Clip overflowing text instead of letting it extend into empty neighbours.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub clip: bool,
+    /// Counterclockwise degrees (-90..90); 255 stacks characters vertically.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub rotation: i16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control: Option<CellControl>,
     /// An Excel number format code (`0.00`, `#,##0`, `yyyy-mm-dd`, `0%`); none is General.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub num_fmt: Option<String>,
@@ -118,6 +180,12 @@ pub struct StylePatch {
     pub v_align: Option<VAlign>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wrap: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clip: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotation: Option<i16>,
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "double_option")]
+    pub control: Option<Option<CellControl>>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "double_option")]
     pub num_fmt: Option<Option<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none", with = "double_option")]
@@ -134,12 +202,24 @@ pub struct StylePatch {
 }
 
 impl StylePatch {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.font_size.flatten().is_some_and(|s|s==0 || s>400) || self.font.as_ref().and_then(|f|f.as_ref()).is_some_and(|f|f.len()>100) {return Err("Use a font size from 1 to 400 and a font name up to 100 characters.".into());}
+        if self.rotation.is_some_and(|r| !(-90..=90).contains(&r) && r != 255) {
+            return Err("Text rotation must be between -90 and 90 degrees, or stacked.".into());
+        }
+        if self.num_fmt.as_ref().and_then(|s| s.as_ref()).is_some_and(|s| s.len() > 512) {
+            return Err("Use a number format no longer than 512 characters.".into());
+        }
+        if let Some(Some(control)) = &self.control { control.validate()?; }
+        Ok(())
+    }
+
     pub fn apply(&self, base: &Style) -> Style {
-        let mut s = if self.clear { Style::default() } else { base.clone() };
+        let mut s = if self.clear { Style { control: base.control.clone(), ..Default::default() } } else { base.clone() };
         macro_rules! set {
             ($($f:ident),*) => { $( if let Some(v) = &self.$f { s.$f = v.clone(); } )* };
         }
-        set!(bold, italic, underline, strike, font_size, font, color, fill, h_align, v_align, wrap, num_fmt,
+        set!(bold, italic, underline, strike, font_size, font, color, fill, h_align, v_align, wrap, clip, rotation, control, num_fmt,
              border_top, border_bottom, border_left, border_right);
         if let Some(f) = &s.num_fmt
             && (f.is_empty() || f.eq_ignore_ascii_case("general"))
@@ -150,7 +230,7 @@ impl StylePatch {
     }
 }
 
-mod double_option {
+pub(crate) mod double_option {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     pub fn serialize<T: Serialize, S: Serializer>(v: &Option<Option<T>>, s: S) -> Result<S::Ok, S::Error> {

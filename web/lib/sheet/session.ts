@@ -65,6 +65,7 @@ export class SheetSession {
   readonly accounts = new Map<string, Account>();
   viewers: Viewer[] = [];
   live: LiveState = "connecting";
+  pendingEdits = 0;
   /** The last failure reading cells (shown quietly by the editor; blocks are tried again). */
   lastError: ApiError | null = null;
   /** Bumped on every change anyone can see; React keys snapshots on it. */
@@ -119,6 +120,15 @@ export class SheetSession {
   }
 
   /* ---- subscribing ----------------------------------------------------------------------------------------------- */
+
+  setSheet(sheet: Sheet): void { this.sheet = sheet; this.notify(); }
+
+  /** Registers the UI's callbacks on this external store and removes them on unmount. */
+  observe(callbacks: Partial<Pick<SheetSession, "onThread" | "onCopy" | "onOverwrite" | "onEditError" | "onMeta" | "onChange">>): () => void {
+    const previous = Object.fromEntries(Object.keys(callbacks).map(key => [key, this[key as keyof typeof callbacks]]));
+    Object.assign(this, callbacks);
+    return () => { Object.assign(this, previous); };
+  }
 
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener);
@@ -197,12 +207,16 @@ export class SheetSession {
       }
     }
     const wanted = new Set([...first, ...around]);
+    // There is one visible grid per session. Keep other tabs' cached cells, but
+    // let their stale blocks wait until they are opened instead of competing
+    // with the current viewport for the bounded request slots.
+    this.wanted.clear();
     this.wanted.set(tab, wanted);
     for (const id of first) data.touch(id, now);
     // Stop what is no longer wanted (scrolled far past before it arrived).
     for (const [key, controller] of this.inflight) {
       const [t, id] = key.split(":").map(Number) as [number, number];
-      if (t === tab && !wanted.has(id)) {
+      if (t !== tab || !wanted.has(id)) {
         controller.abort();
         this.inflight.delete(key);
       }
@@ -244,6 +258,7 @@ export class SheetSession {
       const answer = await calc.getCells(this.line, tab, a1(area), { version: this.atVersion, signal: controller.signal });
       if (controller.signal.aborted) return;
       this.failed.delete(key);
+      if (this.failed.size === 0) this.lastError = null;
       this.takeAnswer(data, answer, area, id);
     } catch (error) {
       if (controller.signal.aborted) return;
@@ -320,15 +335,19 @@ export class SheetSession {
 
   /** Every cell's values in a range, loaded or not (for copying a large selection, filling, jumping). */
   async values(tab: number, range: Rect): Promise<Array<Array<number | string | boolean | null>>> {
-    const answer = await calc.getValues(this.line, tab, a1(range));
+    const answer = await calc.getValues(this.line, tab, a1(range), undefined, this.atVersion);
     return answer.values;
   }
 
   /* ---- live ------------------------------------------------------------------------------------------------------ */
 
-  /** Opens the event stream (from the version this page was rendered at). */
+  /**
+   * Opens the event stream (from the newest version seen). Closing and connecting again is fine (React mounts effects
+   * twice in development): the stream starts again from where it was.
+   */
   connect(): void {
-    if (this.atVersion !== null || this.closed || typeof EventSource === "undefined") {
+    this.closed = false;
+    if (this.atVersion !== null || typeof EventSource === "undefined") {
       this.live = "offline";
       return;
     }
@@ -348,12 +367,25 @@ export class SheetSession {
       if (this.closed) return;
       this.live = "reconnecting";
       this.notify();
+      // An EventSource does not expose a rejected reconnect's HTTP status.
+      void calc.getSheet(this.line.sheet).catch(failure => {
+        if (this.closed) return;
+        const error = ApiError.from(failure);
+        if (error.code === "email_required" || [401, 403, 404].includes(error.status)) {
+          this.close();
+          window.location.reload();
+        }
+      });
       // 1 s, 2 s, 4 s … at most 15 s; the next stream starts from the last version seen.
       const wait = Math.min(15_000, 1000 * 2 ** Math.min(this.retry, 4));
       this.retry++;
       if (this.retryTimer) clearTimeout(this.retryTimer);
       this.retryTimer = setTimeout(() => this.connect(), wait);
     };
+    source.addEventListener("access", () => {
+      this.close();
+      window.location.reload();
+    });
     source.addEventListener("change", event => this.onChangeEvent(parse<ChangeEvent>(event)));
     source.addEventListener("presence", event => {
       const body = parse<{ viewers: Viewer[] }>(event);
@@ -407,6 +439,9 @@ export class SheetSession {
       if ("reload" in change && change.reload) entry.reload = true;
       byTab.set(change.tab, entry);
     }
+    // Charts and protections use the same metadata event as sheet details. Their tab is not included in the
+    // event, so invalidate every held tab; visible blocks reread now and inactive blocks reread when opened.
+    if (metaChanged) for (const tab of this.data.keys()) byTab.set(tab, { rects: [], reload: true });
     for (const [tab, entry] of byTab) {
       const data = this.data.get(tab);
       entry.rects = changeRects(changes as Change[], tab, data?.rows.count, data?.cols.count);
@@ -468,6 +503,8 @@ export class SheetSession {
   edit(edits: Edit[], pending: PendingSet[] = []): Promise<EditOutcome> {
     if (this.readOnly || this.atVersion !== null) return Promise.resolve({ answer: null, error: new ApiError({ status: 403, code: "not_allowed", message: "This sheet is open read-only.", hint: "Ask its owner for edit access, or open the current version." }) });
     const id = ++this.editSeq;
+    this.pendingEdits++;
+    this.notify();
     for (const p of pending) this.data.get(p.tab)?.pending.set(cellKey(p.row, p.col), { input: p.input, edit: id });
     if (pending.length) this.notify();
     const run = async (): Promise<EditOutcome> => {
@@ -489,6 +526,9 @@ export class SheetSession {
         this.clearPending(id);
         this.onEditError?.(failure, pending);
         return { answer: null, error: failure };
+      } finally {
+        this.pendingEdits--;
+        this.notify();
       }
     };
     const next = this.editChain.then(run, run);
@@ -498,8 +538,10 @@ export class SheetSession {
 
   private async catchUp(answer: EditAnswer): Promise<void> {
     let tabsChanged = false;
+    let metaChanged = false;
     for (const change of answer.changes ?? []) {
       if ("tabs" in change && change.tabs) tabsChanged = true;
+      if ("meta" in change && change.meta) metaChanged = true;
       if (!("tab" in change)) continue;
       const data = this.data.get(change.tab);
       if (!data) continue;
@@ -521,6 +563,7 @@ export class SheetSession {
       }
     }
     if (tabsChanged) await this.refreshTabs().catch(() => undefined);
+    if (metaChanged) for (const tab of this.data.keys()) await this.reload(tab);
     // `version` is left to the stream: when it reconnects it replays from there, so nobody else's change is skipped.
     this.notify();
   }
@@ -569,17 +612,23 @@ export class SheetSession {
 
   /* ---- closing --------------------------------------------------------------------------------------------------- */
 
+  /** Stops the stream, the presence beat and every read in flight. Listeners stay (they unsubscribe themselves). */
   close(): void {
     this.closed = true;
     this.source?.close();
     this.source = null;
+    this.live = "offline";
     if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
     if (this.presenceTimer) clearInterval(this.presenceTimer);
+    this.presenceTimer = null;
     if (this.presenceDebounce) clearTimeout(this.presenceDebounce);
+    this.presenceDebounce = null;
     if (this.retryView) clearTimeout(this.retryView);
+    this.retryView = null;
     for (const controller of this.inflight.values()) controller.abort();
     this.inflight.clear();
-    this.listeners.clear();
+    this.queue.length = 0;
   }
 }
 

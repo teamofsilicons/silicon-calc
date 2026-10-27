@@ -67,6 +67,8 @@ export const notify = {
   error: notifyError,
   /** A toast that stays until updated: `const id = notify.loading("Importing"); notify.update(id, { type: "success", … })`. */
   loading: (title: string, description?: string) => show({ type: "loading", title, description }),
+  /** Any toast, with an action ("Undo") or a duration of its own. */
+  toast: (options: ToastOptions) => show(options),
   update: (id: string, patch: Partial<Omit<ToastOptions, "id">>) => stack?.update(id, patch),
   dismiss: (id?: string) => stack?.dismiss(id),
 };

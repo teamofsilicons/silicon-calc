@@ -127,7 +127,9 @@ impl Value {
     pub fn to_json(&self) -> Json {
         match self {
             Self::Empty => Json::Null,
-            Self::Number(n) => serde_json::Number::from_f64(*n).map(Json::Number).unwrap_or(Json::Null),
+            Self::Number(n) => serde_json::Number::from_f64(*n)
+                .map(Json::Number)
+                .unwrap_or(Json::Null),
             Self::Text(s) | Self::Error(s) => Json::String(s.clone()),
             Self::Bool(b) => Json::Bool(*b),
         }
@@ -232,6 +234,22 @@ fn is_default<T: Default + PartialEq>(v: &T) -> bool {
 }
 
 /// How a cell looks (the engine's Style JSON). Absent fields are the defaults.
+/// An in-cell control; entered options are literal text, never formulas.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CellControl {
+    Checkbox {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        checked: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unchecked: Option<String>,
+    },
+    Dropdown { options: Vec<String> },
+    Person,
+    File,
+    Rating,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Style {
@@ -268,6 +286,12 @@ pub struct Style {
     /// Wrap text.
     #[serde(skip_serializing_if = "is_false")]
     pub wrap: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    pub clip: bool,
+    #[serde(skip_serializing_if = "is_default")]
+    pub rotation: i16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub control: Option<CellControl>,
     /// An Excel number format (`0.00`, `#,##0`, `yyyy-mm-dd`, `0%`); none is General.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub num_fmt: Option<String>,
@@ -294,9 +318,12 @@ impl Style {
     /// A short description: `bold, italic, color #FF0000, fill #FFF2CC, align center, format 0.00`.
     pub fn describe(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
-        for (on, name) in
-            [(self.bold, "bold"), (self.italic, "italic"), (self.underline, "underline"), (self.strike, "strike")]
-        {
+        for (on, name) in [
+            (self.bold, "bold"),
+            (self.italic, "italic"),
+            (self.underline, "underline"),
+            (self.strike, "strike"),
+        ] {
             if on {
                 parts.push(name.into());
             }
@@ -314,10 +341,22 @@ impl Style {
             parts.push(format!("fill {c}"));
         }
         if self.h_align != HAlign::General {
-            parts.push(format!("align {}", serde_json::to_value(self.h_align).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default()));
+            parts.push(format!(
+                "align {}",
+                serde_json::to_value(self.h_align)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_owned))
+                    .unwrap_or_default()
+            ));
         }
         if self.v_align != VAlign::Bottom {
-            parts.push(format!("valign {}", serde_json::to_value(self.v_align).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default()));
+            parts.push(format!(
+                "valign {}",
+                serde_json::to_value(self.v_align)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_owned))
+                    .unwrap_or_default()
+            ));
         }
         if self.wrap {
             parts.push("wrap".into());
@@ -335,8 +374,17 @@ impl Style {
             if let Some(b) = b
                 && b.style != BorderStyle::None
             {
-                let style = serde_json::to_value(b.style).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
-                parts.push(format!("border {side} {style}{}", b.color.as_deref().map(|c| format!(" {c}")).unwrap_or_default()));
+                let style = serde_json::to_value(b.style)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_owned))
+                    .unwrap_or_default();
+                parts.push(format!(
+                    "border {side} {style}{}",
+                    b.color
+                        .as_deref()
+                        .map(|c| format!(" {c}"))
+                        .unwrap_or_default()
+                ));
             }
         }
         parts.join(", ")
@@ -347,14 +395,19 @@ impl Style {
 mod double_option {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    pub fn serialize<T: Serialize, S: Serializer>(v: &Option<Option<T>>, s: S) -> Result<S::Ok, S::Error> {
+    pub fn serialize<T: Serialize, S: Serializer>(
+        v: &Option<Option<T>>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
         match v {
             Some(inner) => inner.serialize(s),
             None => s.serialize_none(),
         }
     }
 
-    pub fn deserialize<'de, T: Deserialize<'de>, D: Deserializer<'de>>(d: D) -> Result<Option<Option<T>>, D::Error> {
+    pub fn deserialize<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<Option<Option<T>>, D::Error> {
         Option::<T>::deserialize(d).map(Some)
     }
 }
@@ -397,6 +450,12 @@ pub struct StylePatch {
     /// Wrap on or off.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wrap: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clip: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rotation: Option<i16>,
+    #[serde(skip_serializing_if = "Option::is_none", with = "double_option")]
+    pub control: Option<Option<CellControl>>,
     /// Number format, or `Some(None)` for General.
     #[serde(skip_serializing_if = "Option::is_none", with = "double_option")]
     pub num_fmt: Option<Option<String>>,
@@ -427,7 +486,9 @@ impl StylePatch {
 // ── Sheets, folders, sharing, transfers ─────────────────────────────────────────────────────────────────────
 
 /// A caller's role on a sheet or folder.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     /// Reads cells, versions and comments, downloads, compares.
@@ -547,14 +608,17 @@ pub struct Sheet {
     pub tabs: Option<Vec<Tab>>,
     /// Its open copies.
     pub copies: i64,
+    /// Its link in the web app, when the service gives it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 /// What made a code tab.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TabCode {
-    /// `sql`, `python` or `javascript`.
-    pub language: Language,
+    /// JavaScript for browser commands; older snapshots retain their original label.
+    pub language: String,
     /// The code.
     pub code: String,
     /// The ids of the tabs it reads.
@@ -563,8 +627,6 @@ pub struct TabCode {
     pub run_by: Account,
     /// When it last ran.
     pub run_at: String,
-    /// Whether it reruns when an input tab changes.
-    pub keep_updated: bool,
 }
 
 /// One grid of cells.
@@ -591,6 +653,9 @@ pub struct Tab {
     pub color: Option<String>,
     /// What made it, when code did.
     pub code: Option<TabCode>,
+    /// Conditional formatting and alternating-row rules, in priority order.
+    #[serde(default)]
+    pub format_rules: Vec<Json>,
 }
 
 /// `GET /v1/sheets`.
@@ -609,6 +674,8 @@ pub struct SheetList {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Scope {
+    /// Your own top-level items together with items shared with you.
+    All,
     /// Your own (the top level without a folder).
     #[default]
     Mine,
@@ -622,6 +689,7 @@ impl Scope {
     /// The word.
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::All => "all",
             Self::Mine => "mine",
             Self::Shared => "shared",
             Self::Trash => "trash",
@@ -632,7 +700,7 @@ impl Scope {
 /// Parameters of `GET /v1/sheets`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ListSheets {
-    /// `mine`, `shared` or `trash`.
+    /// `all`, `mine`, `shared` or `trash`.
     pub scope: Scope,
     /// Only this folder's contents.
     pub folder: Option<String>,
@@ -671,7 +739,11 @@ pub struct SheetPatch {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     /// New folder (`Some(None)`: the top level).
-    #[serde(skip_serializing_if = "Option::is_none", with = "double_option", default)]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        with = "double_option",
+        default
+    )]
     pub folder_id: Option<Option<String>>,
 }
 
@@ -691,8 +763,14 @@ pub struct Folder {
     pub role: Role,
     /// When it was made.
     pub created_at: String,
+    /// Who made it (a folder made inside someone else's shared folder belongs to that folder's owner).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<Account>,
     /// When it went to the trash.
     pub trashed_at: Option<String>,
+    /// Its link in the web app, when the service gives it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 /// `GET /v1/folders/{id}`.
@@ -726,7 +804,11 @@ pub struct FolderPatch {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// New parent (`Some(None)`: the top level).
-    #[serde(skip_serializing_if = "Option::is_none", with = "double_option", default)]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        with = "double_option",
+        default
+    )]
     pub parent_id: Option<Option<String>>,
 }
 
@@ -797,7 +879,11 @@ impl<'de> Deserialize<'de> for Via {
         let v = Json::deserialize(d)?;
         match v {
             Json::Object(mut m) => match m.remove("folder") {
-                Some(f) => serde_json::from_value(f).map(Self::Folder).map_err(serde::de::Error::custom),
+                // A folder the answer couldn't describe is still a folder.
+                Some(Json::Null) => Ok(Self::Folder(Folder::default())),
+                Some(f) => serde_json::from_value(f)
+                    .map(Self::Folder)
+                    .map_err(serde::de::Error::custom),
                 None => Ok(Self::Direct),
             },
             _ => Ok(Self::Direct),
@@ -815,6 +901,15 @@ pub struct Member {
     pub role: Role,
     /// Directly or through a folder.
     pub via: Via,
+    /// The role they were given on the item itself, when they were (a folder may give a higher one).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub direct_role: Option<Role>,
+    /// Who gave them their role.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invited_by: Option<Account>,
+    /// Since when.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub since: Option<String>,
 }
 
 /// An invite to an email address that has no account yet.
@@ -837,6 +932,9 @@ pub struct Invite {
 pub struct Sharing {
     /// The owner.
     pub owner: Account,
+    /// The caller's own role on it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<Role>,
     /// Everyone else with a role.
     pub members: Vec<Member>,
     /// Invites waiting for an account.
@@ -924,6 +1022,9 @@ pub struct Transfer {
     pub status: TransferStatus,
     /// When it was offered.
     pub created_at: String,
+    /// When it was accepted, declined or cancelled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decided_at: Option<String>,
 }
 
 /// `GET /v1/transfers`.
@@ -1030,7 +1131,9 @@ impl<'de> Deserialize<'de> for TabRef {
                 .map(Self::Id)
                 .ok_or_else(|| serde::de::Error::custom("a tab id is a whole number")),
             Json::String(s) => Ok(Self::Name(s)),
-            other => Err(serde::de::Error::custom(format!("a tab is an id or a name, not {other}"))),
+            other => Err(serde::de::Error::custom(format!(
+                "a tab is an id or a name, not {other}"
+            ))),
         }
     }
 }
@@ -1052,6 +1155,10 @@ pub struct TabList {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Cell {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tc: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cs: Option<Style>,
     /// Its address (`B2`).
     pub a: String,
     /// Zero-based row.
@@ -1245,6 +1352,12 @@ pub struct CellChange {
     pub before: Content,
     /// What it held after.
     pub after: Content,
+    /// The change it was part of, in words.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// True when it was part of a change to many cells at once (a sort, an import, a paste).
+    #[serde(skip_serializing_if = "is_false")]
+    pub bulk: bool,
 }
 
 /// `GET {line}/tabs/{tab}/cells/{a1}`: one cell with everything known about it.
@@ -1298,7 +1411,9 @@ pub struct CellDetail {
 impl CellDetail {
     /// Its style, inline or by id.
     pub fn style_resolved(&self) -> Option<&Style> {
-        self.style.as_ref().or_else(|| self.s.and_then(|s| self.styles.get(&s.to_string())))
+        self.style
+            .as_ref()
+            .or_else(|| self.s.and_then(|s| self.styles.get(&s.to_string())))
     }
 
     /// Who last changed it.
@@ -1394,6 +1509,25 @@ pub struct ProtectionSpec {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Edit {
+    /// Adds or updates a conditional-formatting or alternating-row rule.
+    FormatRule {
+        /// The tab.
+        tab: TabRef,
+        /// Stable rule identifier; omit to create one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        /// Bounded A1 range.
+        range: String,
+        /// Condition, colour scale or alternating-row configuration.
+        rule: Json,
+    },
+    /// Removes a rule without changing the cells' underlying styles.
+    DeleteFormatRule {
+        /// The tab.
+        tab: TabRef,
+        /// The rule identifier.
+        id: String,
+    },
     /// Types inputs into cells: either `cells` by address, or a block of `rows` starting `at`.
     Set {
         /// The tab.
@@ -1551,7 +1685,11 @@ pub enum Edit {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         frozen_cols: Option<u32>,
         /// Colour, or `Some(None)` to remove it.
-        #[serde(default, skip_serializing_if = "Option::is_none", with = "double_option")]
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "double_option"
+        )]
         color: Option<Option<String>>,
     },
     /// Sets column widths (`None`: the default width).
@@ -1648,12 +1786,26 @@ pub enum Edit {
 impl Edit {
     /// Inputs into cells by address.
     pub fn set_cells(tab: impl Into<TabRef>, cells: Vec<CellInput>) -> Self {
-        Self::Set { tab: tab.into(), cells: Some(cells), at: None, rows: None }
+        Self::Set {
+            tab: tab.into(),
+            cells: Some(cells),
+            at: None,
+            rows: None,
+        }
     }
 
     /// A block of inputs starting at `at`.
-    pub fn set_block(tab: impl Into<TabRef>, at: impl Into<String>, rows: Vec<Vec<String>>) -> Self {
-        Self::Set { tab: tab.into(), cells: None, at: Some(at.into()), rows: Some(rows) }
+    pub fn set_block(
+        tab: impl Into<TabRef>,
+        at: impl Into<String>,
+        rows: Vec<Vec<String>>,
+    ) -> Self {
+        Self::Set {
+            tab: tab.into(),
+            cells: None,
+            at: Some(at.into()),
+            rows: Some(rows),
+        }
     }
 }
 
@@ -1726,7 +1878,10 @@ pub struct EditAnswer {
 impl EditAnswer {
     /// The id of a tab the edit added (`add_tab`), when it says.
     pub fn added_tab(&self) -> Option<u32> {
-        self.changes.iter().find(|c| c.tabs && c.tab.is_some()).and_then(|c| c.tab)
+        self.changes
+            .iter()
+            .find(|c| c.tabs && c.tab.is_some())
+            .and_then(|c| c.tab)
     }
 }
 
@@ -1809,44 +1964,10 @@ pub struct CopyEvent {
 
 // ── Code ────────────────────────────────────────────────────────────────────────────────────────────────────
 
-/// A language code runs in.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Language {
-    /// DuckDB SQL, read only.
-    #[default]
-    Sql,
-    /// Python with pandas and numpy.
-    Python,
-    /// JavaScript.
-    Javascript,
-}
-
-impl Language {
-    /// The word.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Sql => "sql",
-            Self::Python => "python",
-            Self::Javascript => "javascript",
-        }
-    }
-
-    /// Reads `sql`, `python`/`py`, `javascript`/`js`.
-    pub fn parse(s: &str) -> Option<Self> {
-        Some(match s.trim().to_ascii_lowercase().as_str() {
-            "sql" | "duckdb" => Self::Sql,
-            "python" | "py" | "python3" => Self::Python,
-            "javascript" | "js" | "node" => Self::Javascript,
-            _ => return None,
-        })
-    }
-}
-
 /// Where a run's result goes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum RunInto {
+pub enum CommandInto {
     /// A new tab made by this code.
     NewTab {
         /// Its name.
@@ -1858,26 +1979,33 @@ pub enum RunInto {
         tab: TabRef,
         /// The top-left cell.
         at: String,
+        /// Replace the whole command-output tab when rerunning it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        replace: bool,
     },
 }
 
-/// `POST {line}/run`.
+/// Browser-computed output to validate and store; the server never executes `code`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RunRequest {
-    /// The language.
-    pub language: Language,
-    /// The code.
+pub struct CommandResultRequest {
+    /// JavaScript source retained with the output.
     pub code: String,
-    /// Where the result goes; none just answers it.
-    pub into: Option<RunInto>,
-    /// With a new tab: rerun when an input tab changes.
-    pub keep_updated: bool,
+    /// Exact input version; stale results are rejected.
+    pub base_version: i64,
+    /// Input tab identities.
+    pub inputs: Vec<u32>,
+    /// Output column names.
+    pub columns: Vec<String>,
+    /// Rectangular scalar JSON values computed in the browser.
+    pub rows: Vec<Vec<Json>>,
+    /// Destination for the result.
+    pub into: CommandInto,
 }
 
 /// What a run gave.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct RunAnswer {
+pub struct CommandResultAnswer {
     /// Column names.
     pub columns: Vec<String>,
     /// Up to 1,000 rows.
@@ -1896,13 +2024,6 @@ pub struct RunAnswer {
     pub version: Option<i64>,
     /// The tab written, when it was.
     pub tab: Option<Tab>,
-}
-
-/// `PATCH {line}/tabs/{tab}/code`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CodePatch {
-    /// Rerun when an input tab changes.
-    pub keep_updated: bool,
 }
 
 // ── Files ───────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1929,11 +2050,13 @@ pub enum Format {
     Parquet,
     /// PDF (download only).
     Pdf,
+    /// Self-contained web page (download only).
+    Html,
 }
 
 impl Format {
     /// Every format.
-    pub const ALL: [Format; 9] = [
+    pub const ALL: [Format; 10] = [
         Self::Xlsx,
         Self::Xls,
         Self::Ods,
@@ -1943,6 +2066,7 @@ impl Format {
         Self::Json,
         Self::Parquet,
         Self::Pdf,
+        Self::Html,
     ];
 
     /// The extension without the dot.
@@ -1957,6 +2081,7 @@ impl Format {
             Self::Json => "json",
             Self::Parquet => "parquet",
             Self::Pdf => "pdf",
+            Self::Html => "html",
         }
     }
 
@@ -1973,7 +2098,7 @@ impl Format {
 
     /// True for formats that can be opened (all but PDF).
     pub fn can_import(self) -> bool {
-        self != Self::Pdf
+        !matches!(self, Self::Pdf | Self::Html)
     }
 
     /// True for formats that hold one tab.
@@ -1993,6 +2118,7 @@ impl Format {
             Self::Json => "application/json",
             Self::Parquet => "application/vnd.apache.parquet",
             Self::Pdf => "application/pdf",
+            Self::Html => "text/html",
         }
     }
 }
@@ -2038,7 +2164,12 @@ pub struct DownloadQuery {
 impl DownloadQuery {
     /// The latest version in `format`.
     pub fn new(format: Format) -> Self {
-        Self { format, tab: None, version: None, formulas: false }
+        Self {
+            format,
+            tab: None,
+            version: None,
+            formulas: false,
+        }
     }
 }
 
@@ -2249,7 +2380,10 @@ impl WorkbookDiff {
 
     /// A tab's name by id.
     pub fn tab_name(&self, id: u32) -> Option<&str> {
-        self.tabs.iter().find(|t| t.tab == id).map(|t| t.name.as_str())
+        self.tabs
+            .iter()
+            .find(|t| t.tab == id)
+            .map(|t| t.name.as_str())
     }
 }
 
@@ -2549,6 +2683,9 @@ pub struct Reaction {
 pub struct Comment {
     /// Its id.
     pub id: String,
+    /// The thread it is in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
     /// Who wrote it.
     pub author: Account,
     /// The text.
@@ -2561,6 +2698,9 @@ pub struct Comment {
     pub created_at: String,
     /// When it was last edited.
     pub edited_at: Option<String>,
+    /// On the answer to writing it: who it mentions but can't open the sheet, so wasn't told.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mentioned_without_access: Vec<Account>,
 }
 
 /// A comment and its replies, on a cell, range, row, column or tab.
@@ -2595,12 +2735,23 @@ pub struct Thread {
     pub comments: Vec<Comment>,
     /// When it was started.
     pub created_at: String,
+    /// Who started it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<Account>,
+    /// Its link in the web app, when the service gives it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// On the answer to starting it: who it mentions but can't open the sheet, so wasn't told.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mentioned_without_access: Vec<Account>,
 }
 
 impl Thread {
     /// Who started it.
     pub fn author(&self) -> Option<&Account> {
-        self.comments.first().map(|c| &c.author)
+        self.created_by
+            .as_ref()
+            .or_else(|| self.comments.first().map(|c| &c.author))
     }
 
     /// Where it is, as `Tab!B2:B9` (or `Tab` for the whole tab).
@@ -2700,8 +2851,10 @@ pub struct Limits {
     pub max_upload_bytes: u64,
     /// Cells per edit request.
     pub max_cells_per_edit: u64,
-    /// Seconds a run may take.
-    pub code_timeout_seconds: u64,
+    /// Time limit enforced by the browser command worker.
+    pub browser_command_timeout_seconds: u64,
+    /// Time limit for trusted server file conversion.
+    pub conversion_timeout_seconds: u64,
 }
 
 /// `GET /v1/meta`.
@@ -2730,7 +2883,10 @@ mod tests {
             (Value::Number(12.5), json!({"t": "number", "v": 12.5})),
             (Value::Text("hi".into()), json!({"t": "text", "v": "hi"})),
             (Value::Bool(true), json!({"t": "bool", "v": true})),
-            (Value::Error("#DIV/0!".into()), json!({"t": "error", "v": "#DIV/0!"})),
+            (
+                Value::Error("#DIV/0!".into()),
+                json!({"t": "error", "v": "#DIV/0!"}),
+            ),
         ] {
             assert_eq!(serde_json::to_value(&v).unwrap(), j);
             assert_eq!(serde_json::from_value::<Value>(j).unwrap(), v);
@@ -2742,21 +2898,75 @@ mod tests {
 
     #[test]
     fn edits_serialize_as_the_api_says() {
-        let e = Edit::set_cells(1, vec![CellInput { a: "B2".into(), input: "=A1*2".into() }]);
-        assert_eq!(serde_json::to_value(&e).unwrap(), json!({"type": "set", "tab": 1, "cells": [{"a": "B2", "input": "=A1*2"}]}));
+        let e = Edit::set_cells(
+            1,
+            vec![CellInput {
+                a: "B2".into(),
+                input: "=A1*2".into(),
+            }],
+        );
+        assert_eq!(
+            serde_json::to_value(&e).unwrap(),
+            json!({"type": "set", "tab": 1, "cells": [{"a": "B2", "input": "=A1*2"}]})
+        );
         let e = Edit::set_block("Sales", "A1", vec![vec!["name".into(), "amount".into()]]);
-        assert_eq!(serde_json::to_value(&e).unwrap(), json!({"type": "set", "tab": "Sales", "at": "A1", "rows": [["name", "amount"]]}));
-        let e = Edit::InsertRows { tab: 1.into(), at: 4, count: 2 };
-        assert_eq!(serde_json::to_value(&e).unwrap(), json!({"type": "insert_rows", "tab": 1, "at": 4, "count": 2}));
-        let e = Edit::TabProps { tab: 1.into(), frozen_rows: Some(1), frozen_cols: None, color: Some(None) };
-        assert_eq!(serde_json::to_value(&e).unwrap(), json!({"type": "tab_props", "tab": 1, "frozen_rows": 1, "color": null}));
-        let e = Edit::ColWidth { tab: 1.into(), cols: "A:C".into(), width: None };
-        assert_eq!(serde_json::to_value(&e).unwrap(), json!({"type": "col_width", "tab": 1, "cols": "A:C", "width": null}));
-        assert_eq!(serde_json::to_value(Edit::Undo).unwrap(), json!({"type": "undo"}));
-        let e = Edit::Names { names: vec![NameDef { name: "Revenue".into(), reference: "Sales!$B$2:$B$100".into() }] };
-        assert_eq!(serde_json::to_value(&e).unwrap(), json!({"type": "names", "names": [{"name": "Revenue", "ref": "Sales!$B$2:$B$100"}]}));
-        let p = StylePatch { bold: Some(true), fill: Some(None), num_fmt: Some(Some("0.00".into())), ..Default::default() };
-        let e = Edit::Style { tab: 1.into(), range: "A1:C1".into(), patch: p };
+        assert_eq!(
+            serde_json::to_value(&e).unwrap(),
+            json!({"type": "set", "tab": "Sales", "at": "A1", "rows": [["name", "amount"]]})
+        );
+        let e = Edit::InsertRows {
+            tab: 1.into(),
+            at: 4,
+            count: 2,
+        };
+        assert_eq!(
+            serde_json::to_value(&e).unwrap(),
+            json!({"type": "insert_rows", "tab": 1, "at": 4, "count": 2})
+        );
+        let e = Edit::TabProps {
+            tab: 1.into(),
+            frozen_rows: Some(1),
+            frozen_cols: None,
+            color: Some(None),
+        };
+        assert_eq!(
+            serde_json::to_value(&e).unwrap(),
+            json!({"type": "tab_props", "tab": 1, "frozen_rows": 1, "color": null})
+        );
+        let e = Edit::ColWidth {
+            tab: 1.into(),
+            cols: "A:C".into(),
+            width: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&e).unwrap(),
+            json!({"type": "col_width", "tab": 1, "cols": "A:C", "width": null})
+        );
+        assert_eq!(
+            serde_json::to_value(Edit::Undo).unwrap(),
+            json!({"type": "undo"})
+        );
+        let e = Edit::Names {
+            names: vec![NameDef {
+                name: "Revenue".into(),
+                reference: "Sales!$B$2:$B$100".into(),
+            }],
+        };
+        assert_eq!(
+            serde_json::to_value(&e).unwrap(),
+            json!({"type": "names", "names": [{"name": "Revenue", "ref": "Sales!$B$2:$B$100"}]})
+        );
+        let p = StylePatch {
+            bold: Some(true),
+            fill: Some(None),
+            num_fmt: Some(Some("0.00".into())),
+            ..Default::default()
+        };
+        let e = Edit::Style {
+            tab: 1.into(),
+            range: "A1:C1".into(),
+            patch: p,
+        };
         assert_eq!(
             serde_json::to_value(&e).unwrap(),
             json!({"type": "style", "tab": 1, "range": "A1:C1", "patch": {"bold": true, "fill": null, "num_fmt": "0.00"}})
@@ -2767,29 +2977,65 @@ mod tests {
 
     #[test]
     fn run_into_shapes() {
-        assert_eq!(serde_json::to_value(RunInto::NewTab { new_tab: "By region".into() }).unwrap(), json!({"new_tab": "By region"}));
-        assert_eq!(serde_json::to_value(RunInto::Cells { tab: 3.into(), at: "A1".into() }).unwrap(), json!({"tab": 3, "at": "A1"}));
-        let r = RunRequest { language: Language::Sql, code: "select 1".into(), into: None, keep_updated: false };
-        assert_eq!(serde_json::to_value(&r).unwrap(), json!({"language": "sql", "code": "select 1", "into": null, "keep_updated": false}));
+        assert_eq!(
+            serde_json::to_value(CommandInto::NewTab {
+                new_tab: "By region".into()
+            })
+            .unwrap(),
+            json!({"new_tab": "By region"})
+        );
+        assert_eq!(
+            serde_json::to_value(CommandInto::Cells {
+                tab: 3.into(),
+                at: "A1".into(),
+                replace: false
+            })
+            .unwrap(),
+            json!({"tab": 3, "at": "A1"})
+        );
+        let r = CommandResultRequest {
+            code: "return [[1]]".into(),
+            base_version: 7,
+            inputs: vec![1],
+            columns: vec!["value".into()],
+            rows: vec![vec![json!(1)]],
+            into: CommandInto::NewTab {
+                new_tab: "Result".into(),
+            },
+        };
+        let body = serde_json::to_value(&r).unwrap();
+        assert_eq!(body["base_version"], 7);
+        assert_eq!(body["rows"], json!([[1]]));
+        assert!(body.get("language").is_none());
     }
 
     #[test]
     fn via_reads_both_forms() {
-        let m: Member = serde_json::from_value(json!({"account": {"id": "c:ada"}, "role": "editor", "via": "direct"})).unwrap();
+        let m: Member = serde_json::from_value(
+            json!({"account": {"id": "c:ada"}, "role": "editor", "via": "direct"}),
+        )
+        .unwrap();
         assert_eq!(m.via, Via::Direct);
         let m: Member =
             serde_json::from_value(json!({"account": {"id": "c:ada"}, "role": "viewer", "via": {"folder": {"id": "f1", "name": "Finance"}}}))
                 .unwrap();
         assert!(matches!(m.via, Via::Folder(ref f) if f.name == "Finance"));
-        assert_eq!(serde_json::to_value(&m.via).unwrap()["folder"]["name"], "Finance");
+        assert_eq!(
+            serde_json::to_value(&m.via).unwrap()["folder"]["name"],
+            "Finance"
+        );
     }
 
     #[test]
     fn lenient_answers() {
-        let s: Sheet = serde_json::from_value(json!({"id": "k3j9xq2mpa7d", "title": "Q3", "role": "editor", "brand_new_field": 1})).unwrap();
+        let s: Sheet = serde_json::from_value(
+            json!({"id": "k3j9xq2mpa7d", "title": "Q3", "role": "editor", "brand_new_field": 1}),
+        )
+        .unwrap();
         assert_eq!(s.role, Role::Editor);
         assert!(s.tabs.is_none());
-        let v: Version = serde_json::from_value(json!({"version": 3, "kind": "something-new"})).unwrap();
+        let v: Version =
+            serde_json::from_value(json!({"version": 3, "kind": "something-new"})).unwrap();
         assert_eq!(v.kind, VersionKind::Other);
         let c: CellChange = serde_json::from_value(json!({"version": 3, "by": "6667", "before": {"t": "number", "v": 1.0}, "after": "=A1*2"})).unwrap();
         assert_eq!(c.by.uuid(), "6667");
@@ -2798,7 +3044,10 @@ mod tests {
         let c: CellChange = serde_json::from_value(json!({"by": {"uuid": "u", "id": "c:ada"}, "before": {"value": {"t": "text", "v": "x"}}})).unwrap();
         assert_eq!(c.by.label(&BTreeMap::new()), "c:ada");
         assert!(matches!(c.before, Content::Summary(_)));
-        let m: MergeAnswer = serde_json::from_value(json!({"version": 9, "tabs_added": ["Notes"], "tabs_removed": 0})).unwrap();
+        let m: MergeAnswer = serde_json::from_value(
+            json!({"version": 9, "tabs_added": ["Notes"], "tabs_removed": 0}),
+        )
+        .unwrap();
         assert_eq!(m.tabs_added.count(), 1);
         assert_eq!(m.tabs_removed.count(), 0);
     }
@@ -2806,9 +3055,18 @@ mod tests {
     #[test]
     fn tab_refs() {
         assert_eq!(serde_json::to_value(TabRef::Id(2)).unwrap(), json!(2));
-        assert_eq!(serde_json::to_value(TabRef::from("Sales")).unwrap(), json!("Sales"));
-        assert_eq!(serde_json::from_value::<TabRef>(json!(2)).unwrap(), TabRef::Id(2));
-        assert_eq!(serde_json::from_value::<TabRef>(json!("x")).unwrap(), TabRef::Name("x".into()));
+        assert_eq!(
+            serde_json::to_value(TabRef::from("Sales")).unwrap(),
+            json!("Sales")
+        );
+        assert_eq!(
+            serde_json::from_value::<TabRef>(json!(2)).unwrap(),
+            TabRef::Id(2)
+        );
+        assert_eq!(
+            serde_json::from_value::<TabRef>(json!("x")).unwrap(),
+            TabRef::Name("x".into())
+        );
     }
 
     #[test]
@@ -2822,8 +3080,17 @@ mod tests {
 
     #[test]
     fn styles_describe_themselves() {
-        let s = Style { bold: true, fill: Some("#FFF2CC".into()), h_align: HAlign::Center, num_fmt: Some("0.00".into()), ..Default::default() };
-        assert_eq!(s.describe(), "bold, fill #FFF2CC, align center, format 0.00");
+        let s = Style {
+            bold: true,
+            fill: Some("#FFF2CC".into()),
+            h_align: HAlign::Center,
+            num_fmt: Some("0.00".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            s.describe(),
+            "bold, fill #FFF2CC, align center, format 0.00"
+        );
         assert!(Style::default().is_default());
     }
 }

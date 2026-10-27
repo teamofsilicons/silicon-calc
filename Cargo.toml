@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/calc-engine", "crates/calc-runner", "crates/calc-ting", "crates/calc-api", "crates/silicon-calc-client", "crates/calc-cli"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/teamofsilicons/silicon-calc"

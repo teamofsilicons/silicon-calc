@@ -6,10 +6,13 @@
 
 pub mod addr;
 pub mod dates;
+pub mod conditional;
 pub mod diff;
 pub mod formats;
 pub mod formula;
 pub mod input;
+pub mod javascript;
+pub mod merge_ids;
 pub mod model;
 pub mod numfmt;
 pub mod ops;

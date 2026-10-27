@@ -7,7 +7,7 @@
 
 use axum::http::StatusCode;
 use calc_engine::{
-    Op, Rect, StylePatch, Tab, TabId, Workbook,
+    Op, Rect, StylePatch, Tab, Workbook,
     addr::{MAX_COLS, MAX_ROWS, col_index},
     formula::parse::parse_formula,
     model::{Axis, Chart, DefinedName, IdRect, Protection},
@@ -210,6 +210,8 @@ enum Edit {
         tab: TabRef,
         range: String,
     },
+    FormatRule { tab: TabRef, range: String, id: Option<String>, rule: calc_engine::conditional::Kind },
+    DeleteFormatRule { tab: TabRef, id: String },
     Names {
         names: Vec<NameIn>,
     },
@@ -513,6 +515,7 @@ async fn prepare(state: &AppState, edit: Edit, cells: &mut u64) -> ApiResult<Pre
             })
         }
         Edit::Style { tab, range, patch } => {
+            patch.validate().map_err(|message| ApiError::invalid_field("patch", message))?;
             let w = view::parse_range(&range, "range")?;
             Box::new(move |wb: &Workbook| {
                 let t = tab_of(wb, &tab)?;
@@ -535,40 +538,17 @@ async fn prepare(state: &AppState, edit: Edit, cells: &mut u64) -> ApiResult<Pre
                 Ok(Some(wb.prepare_clear(t.id, clipped, what.unwrap_or(ClearWhat::Contents))?))
             })
         }
-        Edit::InsertRows { tab, at, count: n } | Edit::InsertCols { tab, at, count: n } => {
-            let rows = matches!(edit_kind_rows(&tab, true), true);
-            let _ = rows;
-            unreachable_insert(tab, at, n)?
-        }
-        Edit::DeleteRows { .. } | Edit::DeleteCols { .. } => unreachable!("handled by prepare_axis"),
-        other => return prepare_more(state, other, cells).await,
-    }))
-}
+        Edit::InsertRows { tab, at, count } => axis_stage(tab, true, AxisEdit::Insert, at, count)?,
+        Edit::InsertCols { tab, at, count } => axis_stage(tab, false, AxisEdit::Insert, at, count)?,
+        Edit::DeleteRows { tab, at, count } => axis_stage(tab, true, AxisEdit::Delete, at, count)?,
+        Edit::DeleteCols { tab, at, count } => axis_stage(tab, false, AxisEdit::Delete, at, count)?,
+        Edit::MoveRows { tab, from, count, to } => axis_stage(tab, true, AxisEdit::Move(to), from, count)?,
+        Edit::MoveCols { tab, from, count, to } => axis_stage(tab, false, AxisEdit::Move(to), from, count)?,
+        Edit::HideRows { tab, range } => hide_stage(tab, true, true, &range)?,
+        Edit::ShowRows { tab, range } => hide_stage(tab, true, false, &range)?,
+        Edit::HideCols { tab, range } => hide_stage(tab, false, true, &range)?,
+        Edit::ShowCols { tab, range } => hide_stage(tab, false, false, &range)?,
 
-// Rows and columns are handled by `prepare_axis`; these two stand-ins keep the match above exhaustive without
-// repeating it.
-fn edit_kind_rows(_tab: &TabRef, rows: bool) -> bool {
-    rows
-}
-
-fn unreachable_insert(_tab: TabRef, _at: u32, _n: u32) -> ApiResult<Stage> {
-    unreachable!("handled by prepare_axis")
-}
-
-/// Positions inside the grid.
-fn check_grid<T>(writes: &[(u32, u32, T)]) -> ApiResult<()> {
-    if let Some((r, c, _)) = writes.iter().find(|(r, c, _)| *r >= MAX_ROWS || *c >= MAX_COLS) {
-        return Err(bad(
-            "at",
-            format!("Row {} column {} is outside the grid (at most {MAX_ROWS} rows and {MAX_COLS} columns).", r + 1, c + 1),
-        ));
-    }
-    Ok(())
-}
-
-async fn prepare_more(state: &AppState, edit: Edit, cells: &mut u64) -> ApiResult<Prepared> {
-    let _ = &cells;
-    Ok(Prepared::Stage(match edit {
         Edit::Sort { tab, range, by, header } => {
             let w = view::parse_range(&range, "range")?;
             if by.is_empty() {
@@ -624,7 +604,7 @@ async fn prepare_more(state: &AppState, edit: Edit, cells: &mut u64) -> ApiResul
                 Some(None) => Some(None),
                 Some(Some(text)) => Some(Some(color(&text)?)),
             };
-            let props = TabProps { frozen_rows, frozen_cols, color, code: None };
+            let props = TabProps { frozen_rows, frozen_cols, color, code: None, ..Default::default() };
             Box::new(move |wb: &Workbook| Ok(Some(Op::TabProps { tab: tab_of(wb, &tab)?.id, props })))
         }
         Edit::ColWidth { tab, cols, width } => {
@@ -648,10 +628,6 @@ async fn prepare_more(state: &AppState, edit: Edit, cells: &mut u64) -> ApiResul
                 Ok(Some(with_extend(extend_for(t, r2 + 1, 0), Op::RowHeights { tab: t.id, heights })))
             })
         }
-        Edit::HideRows { tab, range } | Edit::ShowRows { tab, range } => {
-            unreachable_hide(tab, range)?
-        }
-        Edit::HideCols { .. } | Edit::ShowCols { .. } => unreachable!("handled by prepare_axis"),
         Edit::Merge { tab, range } => {
             let w = view::parse_range(&range, "range")?;
             Box::new(move |wb: &Workbook| {
@@ -684,6 +660,27 @@ async fn prepare_more(state: &AppState, edit: Edit, cells: &mut u64) -> ApiResul
                 })
             })
         }
+        Edit::FormatRule { tab, range, id, rule } => {
+            rule.validate().map_err(|e|bad("rule",e))?;
+            let window=view::parse_range(&range,"range")?;
+            let id=id.unwrap_or_else(||uuid::Uuid::new_v4().to_string());
+            if id.len()>100 {return Err(bad("id","Use a rule id up to 100 characters."));}
+            Box::new(move |wb:&Workbook| {
+                let t=tab_of(wb,&tab)?;let rect=bounded(t,window);check_cells(&rect)?;
+                if let calc_engine::conditional::Kind::Condition{condition,value,..}=&rule {
+                    if condition=="formula" {parse_formula(value.trim().trim_start_matches('='),rect.r1,rect.c1,&wb.names()).map_err(|e|bad("value",e.message))?;}
+                }
+                let (area,ext)=id_area(t,rect);
+                let mut rules=t.format_rules.clone();
+                let pos=rules.iter().position(|r|r.id==id).unwrap_or(rules.len());rules.retain(|r|r.id!=id);
+                rules.insert(pos,calc_engine::conditional::Rule{id,area,kind:rule});
+                Ok(Some(with_extend(ext,Op::TabProps{tab:t.id,props:TabProps{format_rules:Some(rules),..Default::default()}})))
+            })
+        }
+        Edit::DeleteFormatRule {tab,id} => Box::new(move |wb:&Workbook| {
+            let t=tab_of(wb,&tab)?;let mut rules=t.format_rules.clone();rules.retain(|r|r.id!=id);
+            Ok(Some(Op::TabProps{tab:t.id,props:TabProps{format_rules:Some(rules),..Default::default()}}))
+        }),
         Edit::Names { names } => {
             let mut list = Vec::new();
             for (k, n) in names.into_iter().enumerate() {
@@ -817,12 +814,7 @@ async fn prepare_more(state: &AppState, edit: Edit, cells: &mut u64) -> ApiResul
             }
             Ok(Some(Op::DeleteProtection { id }))
         }),
-        _ => unreachable!("handled by prepare"),
     }))
-}
-
-fn unreachable_hide(_tab: TabRef, _range: String) -> ApiResult<Stage> {
-    unreachable!("handled by prepare_axis")
 }
 
 fn no_tab_named(name: &str) -> ApiError {
@@ -863,15 +855,95 @@ fn move_op(t: &Tab, rows: bool, from: u32, n: u32, to: u32) -> ApiResult<Op> {
     Ok(with_extend(ext, Op::Reorder { tab: t.id, rows, ids: seq }))
 }
 
-/// Inserting, deleting, moving, hiding and showing rows and columns.
-fn prepare_axis(edit: Edit) -> ApiResult<Stage> {
-    Ok(match edit {
-        Edit::InsertRows { tab, at, count } | Edit::InsertCols { tab, at, count } | Edit::DeleteRows { tab, at, count } | Edit::DeleteCols { tab, at, count }
-            if false =>
-        {
-            let _ = (tab, at, count);
-            unreachable!()
-        }
-        _ => unreachable!(),
+/// Positions inside the grid.
+fn check_grid<T>(writes: &[(u32, u32, T)]) -> ApiResult<()> {
+    if let Some((r, c, _)) = writes.iter().find(|(r, c, _)| *r >= MAX_ROWS || *c >= MAX_COLS) {
+        return Err(bad(
+            "at",
+            format!("Row {} column {} is outside the grid (at most {MAX_ROWS} rows and {MAX_COLS} columns).", r + 1, c + 1),
+        ));
+    }
+    Ok(())
+}
+
+/// What happens to rows or columns.
+#[derive(Clone, Copy)]
+enum AxisEdit {
+    Insert,
+    Delete,
+    /// To before this position (positions before the move).
+    Move(u32),
+}
+
+/// Inserting, deleting and moving `count` rows (or columns) from position `at`.
+fn axis_stage(tab: TabRef, rows: bool, what: AxisEdit, at: u32, count: u32) -> ApiResult<Stage> {
+    let (limit, word) = if rows { (MAX_ROWS, "rows") } else { (MAX_COLS, "columns") };
+    if count == 0 {
+        return Err(bad("count", format!("count is how many {word}: 1 or more.")));
+    }
+    if at >= limit || at.saturating_add(count) > limit {
+        return Err(bad("at", format!("Those {word} are outside the grid (a tab has at most {limit} {word}; positions start at 0).")));
+    }
+    if let AxisEdit::Move(to) = what
+        && to > limit
+    {
+        return Err(bad("to", format!("Position {to} is outside the grid (a tab has at most {limit} {word}).")));
+    }
+    if count > 1_000_000 {
+        return Err(bad("count", format!("Insert, delete or move at most 1,000,000 {word} at a time.")));
+    }
+    Ok(match what {
+        AxisEdit::Insert => Box::new(move |wb: &Workbook| {
+            let t = tab_of(wb, &tab)?;
+            Ok(Some(wb.prepare_insert(t.id, rows, at, count)?))
+        }),
+        AxisEdit::Delete => Box::new(move |wb: &Workbook| {
+            let t = tab_of(wb, &tab)?;
+            let axis = if rows { &t.rows } else { &t.cols };
+            if at >= axis.len() {
+                // Only never-written grid is there: nothing to delete.
+                return Ok(None);
+            }
+            Ok(Some(wb.prepare_delete(t.id, rows, at, count)?))
+        }),
+        AxisEdit::Move(to) => Box::new(move |wb: &Workbook| {
+            let t = tab_of(wb, &tab)?;
+            if to >= at && to <= at + count {
+                // Moving a block to where it already is.
+                return Ok(None);
+            }
+            Ok(Some(move_op(t, rows, at, count, to)?))
+        }),
     })
+}
+
+/// Hiding or showing rows (`3:5`) or columns (`C:E`).
+fn hide_stage(tab: TabRef, rows: bool, hidden: bool, range: &str) -> ApiResult<Stage> {
+    let (a, b) = if rows { view::parse_rows(range, "range")? } else { view::parse_cols(range, "range")? };
+    if (b - a) as usize >= MAX_CELLS_PER_EDIT {
+        return Err(too_many_cells((b - a + 1) as u64));
+    }
+    Ok(Box::new(move |wb: &Workbook| {
+        let t = tab_of(wb, &tab)?;
+        let (axis, now) = if rows { (&t.rows, &t.hidden_rows) } else { (&t.cols, &t.hidden_cols) };
+        let now: std::collections::HashSet<u32> = now.iter().copied().collect();
+        if hidden {
+            let ids: Vec<u32> = (a..=b).map(|p| axis_id(axis, p)).filter(|id| !now.contains(id)).collect();
+            if ids.is_empty() {
+                return Ok(None);
+            }
+            let ext = if rows { extend_for(t, b + 1, 0) } else { extend_for(t, 0, b + 1) };
+            Ok(Some(with_extend(ext, Op::Hide { tab: t.id, rows, ids, hidden })))
+        } else {
+            // Positions that never had ids can't be hidden.
+            let ids: Vec<u32> = (a..=b.min(axis.len().saturating_sub(1)))
+                .filter_map(|p| axis.id_at(p))
+                .filter(|id| now.contains(id))
+                .collect();
+            if ids.is_empty() {
+                return Ok(None);
+            }
+            Ok(Some(Op::Hide { tab: t.id, rows, ids, hidden }))
+        }
+    }))
 }

@@ -1,0 +1,18 @@
+calc.teamofsilicons.com {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8731 {
+		flush_interval -1
+	}
+}
+
+calc-api.teamofsilicons.com {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "same-origin"
+	}
+	reverse_proxy 127.0.0.1:8730 {
+		flush_interval -1
+	}
+}

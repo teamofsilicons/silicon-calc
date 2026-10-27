@@ -14,6 +14,7 @@ import { functionInfo, signatureParts } from "@/lib/sheet/functions";
 import { useControllerRevision } from "@/lib/sheet/react";
 import { formatRelative } from "@/lib/format";
 import { GridEngine, type GridCallbacks } from "./grid-engine";
+import { CellControls } from "./cell-controls";
 import styles from "./grid.module.css";
 
 export interface GridProps {
@@ -42,7 +43,7 @@ export function Grid({ controller, threadsByCell, onContextMenu, onComment, onOp
   const callbacks = useRef<GridCallbacks>({ onContextMenu, onHover: setHover, onComment, onDropFiles });
   useLayoutEffect(() => {
     callbacks.current = { onContextMenu, onHover: setHover, onComment, onDropFiles };
-  });
+  }, [onContextMenu, onComment, onDropFiles]);
 
   useLayoutEffect(() => {
     const el = { root: rootRef.current!, canvas: canvasRef.current!, scroller: scrollerRef.current!, spacer: spacerRef.current!, input: inputRef.current!, mirror: mirrorRef.current! };
@@ -82,6 +83,7 @@ export function Grid({ controller, threadsByCell, onContextMenu, onComment, onOp
         <div ref={spacerRef} className={styles.spacer} />
       </div>
       {engine && overlay ? overlay(engine) : null}
+      {engine ? <CellControls engine={engine} controller={controller} /> : null}
       <div ref={mirrorRef} className={styles.mirror} aria-hidden="true" />
       <textarea
         ref={inputRef}

@@ -21,8 +21,10 @@ const MAX_BLOCKS = 600;
 const BLOCKS_PER_ROW = Math.ceil(MAX_COLS / BLOCK_COLS);
 
 export interface CellRecord {
+  cs?: import("../calc/types").Style;
   v: Value;
   t: string;
+  tc?: string;
   f?: string;
   s?: number;
   spill?: boolean;
@@ -325,6 +327,8 @@ export class TabData {
 export function recordOf(cell: Cell): CellRecord {
   const record: CellRecord = { v: cell.v ?? { t: "empty" }, t: cell.t ?? "" };
   if (cell.f) record.f = cell.f;
+  if (cell.cs) record.cs = cell.cs;
+  if (cell.tc) record.tc = cell.tc;
   if (cell.s) record.s = cell.s;
   if (cell.spill) record.spill = true;
   if (cell.by) record.by = cell.by;

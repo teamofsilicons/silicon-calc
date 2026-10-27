@@ -5,7 +5,7 @@ use std::{cmp::Ordering, sync::Arc};
 
 use super::{
     ast::Expr,
-    eval::{Area, Array, Ctx, Res},
+    eval::{Area, Array, Ctx, Lambda, Res},
 };
 use crate::{
     addr::{MAX_COLS, MAX_ROWS, Rect},
@@ -18,9 +18,18 @@ type R = Res;
 
 /// Calls the function `name` (upper case) with these arguments.
 pub fn call(ctx: &mut Ctx<'_>, name: &str, args: &[Expr]) -> Res {
-    match lookup(name) {
+    if name.eq_ignore_ascii_case("JS") { return crate::javascript::call(ctx, name, args); }
+    match lookup(&name.to_ascii_uppercase()) {
         Some(f) => f(ctx, args),
-        None => Res::err(ErrorKind::Name),
+        None => match ctx.eval(&Expr::Name(Arc::from(name))) {
+            Res::L(lam) => {
+                let values = args.iter().map(|a| (!matches!(a, Expr::Missing)).then(|| ctx.eval(a))).collect();
+                ctx.call_lambda(&lam, values)
+            }
+            Res::V(Value::Error(ErrorKind::Name)) if ctx.grid.has_javascript(name) => crate::javascript::call(ctx, name, args),
+            Res::V(Value::Error(e)) => Res::err(e),
+            _ => Res::err(ErrorKind::Name),
+        },
     }
 }
 
@@ -120,6 +129,8 @@ static TABLE: &[(&str, Func)] = &[
     ("SWITCH", switch),
     ("CHOOSE", choose),
     ("LET", let_),
+    ("LAMBDA", lambda),
+    ("ISOMITTED", isomitted),
     // Information
     ("ISBLANK", isblank),
     ("ISNUMBER", isnumber),
@@ -1400,6 +1411,30 @@ fn let_(ctx: &mut Ctx<'_>, args: &[Expr]) -> R {
     let out = ctx.eval(&args[args.len() - 1]);
     ctx.unbind(bound);
     out
+}
+
+fn lambda(ctx: &mut Ctx<'_>, args: &[Expr]) -> R {
+    let Some((body, params)) = args.split_last() else { return bad_args() };
+    let mut names = Vec::with_capacity(params.len());
+    for p in params {
+        let Expr::Name(n) = p else { return bad_args() };
+        if names.iter().any(|x: &Arc<str>| x.eq_ignore_ascii_case(n)) { return bad_args() }
+        names.push(n.clone());
+    }
+    Res::L(Arc::new(Lambda {
+        params: names, body: Arc::new(body.clone()), captured: ctx.scope().to_vec(),
+        tab: ctx.tab, row: ctx.row, col: ctx.col, builtin: None,
+    }))
+}
+
+fn isomitted(ctx: &mut Ctx<'_>, args: &[Expr]) -> R {
+    if args.len() != 1 { return bad_args() }
+    let omitted = match &args[0] {
+        Expr::Missing => true,
+        Expr::Name(n) => ctx.lookup(n).is_some_and(|b| b.omitted),
+        _ => false,
+    };
+    Res::V(Value::Bool(omitted))
 }
 
 // ---- information -------------------------------------------------------------------------------------------

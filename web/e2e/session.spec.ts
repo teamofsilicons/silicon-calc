@@ -51,14 +51,20 @@ test("the shell: the app's sections, the account menu and the ⌘K palette", asy
   const menu = page.getByRole("menu");
   await expect(menu).toContainText(me);
   await expect(menu).toContainText("Carbon");
-  await expect(menu.getByRole("menuitemradio", { name: "System" })).toBeVisible();
+  await expect(menu.getByRole("menuitemradio", { name: "System" })).toHaveCount(0);
+  // The menu moves focus on the next animation frame. Keyboard dismissal must
+  // target that panel rather than race its still-focused trigger.
+  await expect(menu).toBeFocused();
   await page.keyboard.press("Escape");
+  await expect(menu).toBeHidden();
 
   const target = appConfig.nav[appConfig.nav.length - 1]!;
   await page.keyboard.press(process.platform === "darwin" ? "Meta+K" : "Control+K");
   await expect(page.getByRole("dialog", { name: "Search and jump" })).toBeVisible();
-  await page.keyboard.type(target.label);
-  await page.keyboard.press("Enter");
+  const search = page.getByRole("combobox", { name: "Search pages and actions" });
+  await expect(search).toBeFocused();
+  await search.pressSequentially(target.label);
+  await search.press("Enter");
   await expect(page).toHaveURL(new RegExp(`${target.href}$`));
   await expect(nav.getByRole("link", { name: target.label })).toHaveAttribute("aria-current", "page");
 });
@@ -76,6 +82,8 @@ test("signing out revokes the sign-in, closes every door, and other tabs follow"
   const other = await context.newPage();
   await other.goto(appConfig.home);
   await expect(other.getByRole("navigation", { name: appConfig.name, exact: true })).toBeVisible();
+  // The new tab became active. Return to the tab being clicked so its menu animation can finish normally.
+  await page.bringToFront();
   await page.getByRole("button", { name: /^Account menu, / }).click();
   await page.getByRole("menuitem", { name: "Sign out" }).click();
   await expect(page).toHaveURL(/\/sign-in\?signed_out=1$/);

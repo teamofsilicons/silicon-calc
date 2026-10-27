@@ -28,6 +28,7 @@ pub fn format_value(v: &Value, code: Option<&str>) -> (String, Option<&'static s
 /// True when a format code shows dates or times.
 pub fn is_date_format(code: &str) -> bool {
     let first = split_sections(code).into_iter().next().unwrap_or_default();
+    if ["[h]", "[hh]", "[m]", "[mm]", "[s]", "[ss]"].iter().any(|tag| first.to_ascii_lowercase().contains(tag)) { return true; }
     let mut in_quote = false;
     let mut prev_backslash = false;
     let mut in_bracket = false;
@@ -109,13 +110,16 @@ fn take_color(sec: &str) -> (&str, Option<&'static str>) {
 }
 
 fn condition(sec: &str) -> Option<(String, f64)> {
-    let rest = sec.strip_prefix('[')?;
-    let end = rest.find(']')?;
-    let tag = &rest[..end];
-    for op in [">=", "<=", "<>", ">", "<", "="] {
-        if let Some(v) = tag.strip_prefix(op) {
-            return Some((op.to_owned(), v.trim().parse().ok()?));
+    let mut remaining = sec;
+    while let Some(rest) = remaining.strip_prefix('[') {
+        let end = rest.find(']')?;
+        let tag = &rest[..end];
+        for op in [">=", "<=", "<>", ">", "<", "="] {
+            if let Some(v) = tag.strip_prefix(op) {
+                return Some((op.to_owned(), v.trim().parse().ok()?));
+            }
         }
+        remaining = &rest[end + 1..];
     }
     None
 }
@@ -133,7 +137,7 @@ fn meets(op: &str, n: f64, v: f64) -> bool {
 
 /// Formats a number with a code.
 pub fn format_number(n: f64, code: &str) -> (String, Option<&'static str>) {
-    if code.is_empty() || code.eq_ignore_ascii_case("general") {
+    if code.is_empty() || code.eq_ignore_ascii_case("general") || code == "@" {
         return (format_general(n), None);
     }
     let sections = split_sections(code);
@@ -150,7 +154,7 @@ pub fn format_number(n: f64, code: &str) -> (String, Option<&'static str>) {
         }
         match chosen {
             Some(s) => (s, false),
-            None => (sections.get(2).or(sections.last()).cloned().unwrap_or_default(), false),
+            None => (sections.iter().take(3).find(|s| condition(s).is_none()).cloned().unwrap_or_default(), false),
         }
     } else if n < 0.0 && sections.len() >= 2 {
         (sections[1].clone(), true)
@@ -161,9 +165,10 @@ pub fn format_number(n: f64, code: &str) -> (String, Option<&'static str>) {
     };
     let (body, color) = take_color(&sec);
     let value = if use_abs { n.abs() } else { n };
-    if body.eq_ignore_ascii_case("general") || body.trim().is_empty() && sec.is_empty() {
+    if body.eq_ignore_ascii_case("general") {
         return (format_general(value), color);
     }
+    if body.is_empty() { return (String::new(), color); }
     if is_date_format(body) {
         return (format_date(value, body), color);
     }
@@ -204,6 +209,7 @@ fn render_literal_with(body: &str, text: &str) -> String {
 }
 
 fn format_numeric(n: f64, body: &str) -> String {
+    if let Some(fraction) = format_fraction(n, body) { return fraction; }
     // Split the body into the numeric pattern and the literal text around it.
     let mut pattern = String::new();
     let mut prefix = String::new();
@@ -317,7 +323,7 @@ fn format_numeric(n: f64, body: &str) -> String {
         let grouping = int_pat.contains(',');
         let int_pat: String = int_pat.chars().filter(|&c| c != ',').collect();
         let max_dec = frac_pat.len();
-        let min_dec = frac_pat.chars().take_while(|&c| c == '0').count();
+        let min_dec = frac_pat.rfind('0').map_or(0, |i| i + 1);
         let s = format!("{:.*}", max_dec, v);
         let (int_s, frac_s) = match s.split_once('.') {
             Some((a, b)) => (a.to_owned(), b.to_owned()),
@@ -327,11 +333,15 @@ fn format_numeric(n: f64, body: &str) -> String {
         while frac.len() > min_dec && frac.ends_with('0') {
             frac.pop();
         }
+        let padding = frac_pat.chars().skip(frac.len()).filter(|&c| c == '?').count();
+        frac.push_str(&" ".repeat(padding));
         let min_int = int_pat.chars().filter(|&c| c == '0').count();
         let mut int_digits = if int_s == "0" && min_int == 0 { String::new() } else { int_s };
         while int_digits.len() < min_int {
             int_digits.insert(0, '0');
         }
+        let spaces = int_pat.chars().filter(|&c| c == '?').count().saturating_sub(int_digits.len());
+        int_digits.insert_str(0, &" ".repeat(spaces));
         if grouping && int_digits.len() > 3 {
             let mut g = String::new();
             for (i, ch) in int_digits.chars().enumerate() {
@@ -355,7 +365,58 @@ fn format_numeric(n: f64, body: &str) -> String {
     format!("{sign}{prefix}{digits}{suffix}")
 }
 
+/// Mixed/improper fractions, with a fixed denominator or a bounded approximation.
+fn format_fraction(n: f64, body: &str) -> Option<String> {
+    let slash = body.find('/')?;
+    let before = &body[..slash];
+    let num_start = before.rfind(|c: char| !matches!(c, '0' | '#' | '?')).map_or(0, |i| i + 1);
+    if num_start == before.len() { return None; }
+    let den_end = body[slash + 1..].find(|c: char| !matches!(c, '0'..='9' | '#' | '?')).map_or(body.len(), |i| slash + 1 + i);
+    let denominator = &body[slash + 1..den_end];
+    if denominator.is_empty() { return None; }
+    let first = body[..num_start].find(['0', '#', '?']).unwrap_or(num_start);
+    let mixed = first < num_start;
+    let prefix = render_literal_with(&body[..first], "");
+    let suffix = render_literal_with(&body[den_end..], "");
+    let abs = n.abs();
+    if !abs.is_finite() || abs > 1e12 { return None; }
+    let mut whole = if mixed { abs.floor() as u64 } else { 0 };
+    let value = if mixed { abs.fract() } else { abs };
+    let fixed = denominator.parse::<u64>().ok().filter(|&v| v > 0);
+    let (mut numerator, divisor) = if let Some(d) = fixed {
+        ((value * d as f64).round() as u64, d)
+    } else {
+        let limit = 10u64.pow(denominator.len().min(4) as u32) - 1;
+        // Continued fractions plus the best final semiconvergent.
+        let (mut p0, mut q0, mut p1, mut q1) = (0u64, 1u64, 1u64, 0u64);
+        let mut x = value;
+        loop {
+            let a = x.floor() as u64;
+            let q2 = q0.saturating_add(a.saturating_mul(q1));
+            if q2 > limit { break; }
+            let p2 = p0.saturating_add(a.saturating_mul(p1));
+            (p0, q0, p1, q1) = (p1, q1, p2, q2);
+            let rem = x - a as f64;
+            if rem.abs() < 1e-12 { break; }
+            x = 1.0 / rem;
+        }
+        if q1 == 0 { (value.round() as u64, 1) } else {
+            let k = (limit - q0) / q1;
+            let (p, q) = (p0 + k * p1, q0 + k * q1);
+            if q > 0 && (p as f64 / q as f64 - value).abs() < (p1 as f64 / q1 as f64 - value).abs() { (p, q) } else { (p1, q1) }
+        }
+    };
+    if mixed && numerator >= divisor { whole += numerator / divisor; numerator %= divisor; }
+    let digits = if mixed {
+        if numerator == 0 { whole.to_string() }
+        else if whole == 0 { format!("{numerator}/{divisor}") }
+        else { format!("{whole} {numerator}/{divisor}") }
+    } else { format!("{numerator}/{divisor}") };
+    Some(format!("{}{prefix}{digits}{suffix}", if n < 0.0 && (whole > 0 || numerator > 0) { "-" } else { "" }))
+}
+
 fn format_date(serial: f64, body: &str) -> String {
+    if serial < 0.0 && body.contains('[') { return format!("-{}", format_date(-serial, body)); }
     let Some((y, mo, d)) = ymd_from_serial(serial) else {
         return "#".repeat(8);
     };

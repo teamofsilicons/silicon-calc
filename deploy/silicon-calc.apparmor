@@ -1,0 +1,26 @@
+# Ubuntu 24.04 restricts user namespaces in otherwise unconfined systemd services.
+# This Calc-only, enforcing profile allows bubblewrap's private namespaces; the
+# converter's filesystem, PID and network confinement remains inside bubblewrap.
+abi <abi/4.0>,
+profile silicon-calc-converters flags=(attach_disconnected,mediate_deleted) {
+  # Bubblewrap sets up detached mount roots and opens proc/.../uid_map while
+  # constructing them. attach_disconnected is required to mediate those paths.
+  file,
+  network,
+  capability,
+  mount,
+  umount,
+  pivot_root,
+  ptrace,
+  signal,
+  dbus,
+  unix,
+  userns,
+
+  # ProtectKernelTunables masks /proc in the outer service mount namespace,
+  # preventing an unprivileged nested proc mount. Deny writes here instead;
+  # calc remains an unprivileged account and other systemd protections remain.
+  deny /proc/sys/{,**} wklx,
+  deny /proc/sysrq-trigger wklx,
+  deny /sys/{,**} wklx,
+}

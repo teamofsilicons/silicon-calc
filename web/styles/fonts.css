@@ -1,35 +1,12 @@
 /*
- * BDO Grotesk (SIL Open Font License 1.1, public/fonts/bdo-grotesk/OFL.txt), self-hosted so the CSP keeps
- * font-src 'self'. It is the display face everywhere, and the text face wherever the system has no SF Pro (the stacks
- * in styles/tokens.css put -apple-system first for text). The root layout preloads only the DemiBold used by page
- * titles above the fold; the other weights load when text first needs them. next.config.ts serves /fonts/* with a
- * year-long immutable cache.
+ * Paper Mono v1.000 (SIL Open Font License 1.1, public/fonts/paper-mono/v1.000/OFL.txt), self-hosted so the CSP
+ * keeps font-src 'self'. One variable file supplies every interface weight, including code and canvas text.
+ * The root layout preloads it; the versioned URL is safe for next.config.ts's year-long immutable font cache.
  */
 @font-face {
-  font-family: "BDO Grotesk";
+  font-family: "Paper Mono";
   font-style: normal;
-  font-weight: 400;
+  font-weight: 100 800;
   font-display: swap;
-  src: url("/fonts/bdo-grotesk/BDOGrotesk-Regular.woff2") format("woff2");
-}
-@font-face {
-  font-family: "BDO Grotesk";
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-  src: url("/fonts/bdo-grotesk/BDOGrotesk-Medium.woff2") format("woff2");
-}
-@font-face {
-  font-family: "BDO Grotesk";
-  font-style: normal;
-  font-weight: 600;
-  font-display: swap;
-  src: url("/fonts/bdo-grotesk/BDOGrotesk-DemiBold.woff2") format("woff2");
-}
-@font-face {
-  font-family: "BDO Grotesk";
-  font-style: normal;
-  font-weight: 700;
-  font-display: swap;
-  src: url("/fonts/bdo-grotesk/BDOGrotesk-Bold.woff2") format("woff2");
+  src: url("/fonts/paper-mono/v1.000/PaperMono-Variable.woff2") format("woff2");
 }

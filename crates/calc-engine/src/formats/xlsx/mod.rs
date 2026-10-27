@@ -359,10 +359,13 @@ pub(crate) fn import(bytes: &[u8], _opts: &ImportOptions) -> Result<Imported, Fo
     if let Some(theme) = wb_rels.iter().find(|r| r.kind == "theme").and_then(|r| pkg.read(&r.target)).and_then(|x| read_theme(&x)) {
         palette.theme = theme;
     }
-    let styles = match wb_rels.iter().find(|r| r.kind == "styles").and_then(|r| pkg.read(&r.target)) {
+    let mut styles = match wb_rels.iter().find(|r| r.kind == "styles").and_then(|r| pkg.read(&r.target)) {
         Some(x) => styles::read(&x, &mut palette),
         None => styles::CellStyles::default(),
     };
+    if let Some(xml) = wb_rels.iter().find(|r| r.kind.eq_ignore_ascii_case("featurePropertyBag")).and_then(|r| pkg.read(&r.target)) {
+        styles.read_controls(&xml);
+    }
     let strings: Vec<Arc<str>> = wb_rels
         .iter()
         .find(|r| r.kind == "sharedStrings")
@@ -490,8 +493,12 @@ pub(crate) fn import(bytes: &[u8], _opts: &ImportOptions) -> Result<Imported, Fo
         defined.push(DefinedName { name: name.clone(), text, tab });
     }
 
+    if let Some(xml) = pkg.read(super::cell_controls::PART) { super::cell_controls::restore(&xml, &mut tabs); }
+    if let Some(xml)=pkg.read(super::conditional::PART){super::conditional::restore(&xml,&mut tabs);}
     let warnings = warnings.finish(describe);
-    Ok(Imported { tabs, names: defined, warnings, tab_info, charts, notes })
+    let mut imported=Imported { tabs, names: defined, warnings, tab_info, charts, notes, ..Default::default() };
+    if let Some(xml)=super::programs::read_package(bytes) {super::programs::restore(&xml,&mut imported);}
+    Ok(imported)
 }
 
 fn describe(kind: &str, n: usize) -> String {

@@ -12,7 +12,7 @@ use silicon_calc_client::{
 
 use crate::ctx::Ctx;
 use crate::error::{CliError, CliResult};
-use crate::output::{GridCell, Table, grid, plural, thousands, when_ago};
+use crate::output::{GridCell, Table, grid, plural, when_ago};
 use crate::resolve::{self, Target};
 
 /// An id for this run, so its own changes can be told apart in live events.
@@ -476,8 +476,10 @@ pub async fn write(ctx: &Ctx, w: WriteArgs) -> CliResult<()> {
         Inputs(Vec<Vec<String>>),
         Values(Vec<Vec<Json>>),
     }
-    let data = if let Some(path) = w.values.as_deref() {
-        Data::Values(parse_values(&read_source(path, "the values")?)?)
+    let data = if let Some(given) = w.values.as_deref() {
+        // The JSON itself (it starts with `[`), a file holding it, or - for stdin.
+        let text = if given.trim_start().starts_with('[') { given.to_owned() } else { read_source(given, "the values")? };
+        Data::Values(parse_values(&text)?)
     } else if let Some((path, delim)) = w.csv.as_deref().map(|p| (p, b',')).or(w.tsv.as_deref().map(|p| (p, b'\t'))) {
         let rows = parse_delimited(&read_source(path, "the rows")?, delim)?;
         if w.raw {
@@ -969,11 +971,6 @@ pub async fn undo(ctx: &Ctx, sheet: &str, redo: bool, copy: Option<&str>) -> Cli
         }
     });
     Ok(())
-}
-
-/// For messages: `1,234`.
-pub fn n(v: u64) -> String {
-    thousands(v)
 }
 
 #[cfg(test)]

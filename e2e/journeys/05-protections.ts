@@ -4,10 +4,10 @@
 // owner chooses can; a whole tab can be protected; and the owner takes the protection off again.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { type Sheet, CalcApi, at, plain } from '../lib/calc.ts';
-import { SALES_FILE, revenueOf } from '../lib/fixtures.ts';
+import { revenueOf } from '../lib/fixtures.ts';
 import { journey } from '../lib/journey.ts';
+import { salesSheet } from '../lib/sheets.ts';
 import { type CarbonPerson, type SiliconPerson, world } from '../lib/world.ts';
 
 async function value(api: CalcApi, sheet: string, tab: number, a: string): Promise<unknown> {
@@ -28,12 +28,17 @@ export default journey('Protected ranges keep the original data the Carbon loade
 
   const editsBy = async (api: CalcApi, edits: unknown[]) => ({ base_version: await head(api, sheet.id), edits });
 
-  j.step('a Carbon opens the sales CSV and invites a Silicon as an editor', async () => {
+  j.step('a Carbon and a Silicon it made', async () => {
     ada = await w.carbon('Ada');
     si = await w.silicon(ada, 'Analyst');
-    sheet = await ada.api.post<Sheet>('/v1/sheets/import', { query: { filename: 'sales-2026.csv', title: 'Sales 2026' }, body: readFileSync(SALES_FILE), contentType: 'text/csv' }, 201);
-    const t = (await ada.api.get<Sheet>(`/v1/sheets/${sheet.id}`)).tabs![0]!;
-    tab = { id: t.id, name: t.name };
+  });
+
+  salesSheet(j, 'the Carbon', () => ada.api, 'Sales 2026', (o) => {
+    sheet = o.sheet;
+    tab = o.tab;
+  });
+
+  j.step('the Carbon invites the Silicon as an editor; it edits the sheet', async () => {
     await ada.api.post(`/v1/sheets/${sheet.id}/sharing`, { json: { invite: [si.id], role: 'editor', notify: false } });
     await si.api.edit(sheet.id, [{ type: 'set', tab: tab.id, cells: [{ a: 'G1', input: 'before any protection' }] }]);
   });
@@ -110,9 +115,10 @@ export default journey('Protected ranges keep the original data the Carbon loade
     assert.ok(!(cells.protections ?? []).some((p) => p.id === protectionId), 'the protection is gone');
   });
 
-  j.check('code can\'t write into protected cells either', async () => {
+  j.check('supplied browser command results cannot overwrite protected cells', async () => {
     await ada.api.edit(sheet.id, [{ type: 'protect', protection: { tab: tab.id, range: 'A1:E37', editors: [], description: 'Original data' } }]);
-    const r = await si.api.raw('POST', `${CalcApi.line(sheet.id)}/run`, { json: { language: 'sql', code: 'select 1 as one', into: { tab: tab.id, at: 'A1' } } });
+    const base_version = (await si.api.get(`${CalcApi.line(sheet.id)}/tabs`)).version;
+    const r = await si.api.raw('POST', `${CalcApi.line(sheet.id)}/run`, { json: { code: 'return [{one: 1}];', base_version, inputs: [], columns: ['one'], rows: [[1]], into: { tab: tab.id, at: 'A1' } } });
     assert.equal(r.status, 403, `writing code results over protected cells answers ${r.status}: ${r.text().slice(0, 200)}`);
     assert.equal(await value(ada.api, sheet.id, tab.id, 'A1'), 'month');
   });

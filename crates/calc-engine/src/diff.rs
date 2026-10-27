@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use ahash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
+use ahash::{HashMap, HashMapExt as _, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -56,7 +56,7 @@ fn summary(wb: &Workbook, tab: &Tab, row: RowId, col: ColId) -> CellSummary {
     let cell = tab.cell_by_id(row, col);
     let pos = tab.rows.pos_of(row).zip(tab.cols.pos_of(col));
     let (formula, key) = match (cell.formula.and_then(|g| wb.group(g)), pos) {
-        (Some(g), Some((r, c))) => (Some(format!("={}", to_a1(&g.expr, r, c, &wb.names()))), Some(g.key.clone())),
+        (Some(g), Some((r, c))) => (Some(format!("={}", to_a1(&g.expr, r, c, &wb.names()))), Some(crate::formula::identity::stable_key(wb, tab.id, r, c, &g.expr))),
         _ => (None, None),
     };
     CellSummary {
@@ -97,6 +97,8 @@ pub struct TabDiff {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reordered: bool,
     pub cells_changed: u64,
+    #[serde(default)]
+    pub properties_changed: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -126,6 +128,7 @@ impl WorkbookDiff {
                     && t.cols_added == 0
                     && t.cols_removed == 0
                     && !t.reordered
+                    && !t.properties_changed
             })
     }
 }
@@ -169,6 +172,7 @@ pub fn diff(before: &Workbook, after: &Workbook, limit: usize, only: Option<(Tab
         td.cols_added = acols.iter().filter(|i| !bcols.contains(i) && !(extended(**i, &b.cols) && t.cols.pos_of(**i).is_some_and(|p| p >= b.cols.len()))).count() as u32;
         td.cols_removed = bcols.iter().filter(|i| !acols.contains(i)).count() as u32;
         td.reordered = order_changed(b.rows.ids(), t.rows.ids()) || order_changed(b.cols.ids(), t.cols.ids());
+        td.properties_changed = b.col_widths != t.col_widths || b.row_heights != t.row_heights || b.hidden_rows != t.hidden_rows || b.hidden_cols != t.hidden_cols || b.frozen_rows != t.frozen_rows || b.frozen_cols != t.frozen_cols || b.merges != t.merges || b.color != t.color || b.code != t.code;
         let mut ids: Vec<(RowId, ColId)> = occupied_set(t).union(&occupied_set(b)).copied().collect();
         ids.sort_unstable_by_key(|&(r, c)| (t.rows.pos_of(r).or(b.rows.pos_of(r)), t.cols.pos_of(c).or(b.cols.pos_of(c))));
         for (r, c) in ids {
@@ -191,7 +195,7 @@ pub fn diff(before: &Workbook, after: &Workbook, limit: usize, only: Option<(Tab
                 out.truncated = true;
             }
         }
-        if td.cells_changed > 0 || td.renamed_from.is_some() || td.rows_added + td.rows_removed + td.cols_added + td.cols_removed > 0 || td.reordered {
+        if td.cells_changed > 0 || td.renamed_from.is_some() || td.rows_added + td.rows_removed + td.cols_added + td.cols_removed > 0 || td.reordered || td.properties_changed {
             out.tabs.push(td);
         }
     }
@@ -268,6 +272,8 @@ pub struct MergePlan {
     pub tabs_removed: Vec<String>,
     pub rows_added: u32,
     pub rows_removed: u32,
+    /// Source identities and their destination identities, for durable repeated merges.
+    pub ids: crate::merge_ids::MergeIds,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -301,48 +307,95 @@ pub fn plan_merge(base: &Workbook, ours: &Workbook, theirs: &Workbook, choice: &
     let mut sim = ours.clone();
     let actor = Actor { account: "merge", at: 0 };
     let mut ops: Vec<Op> = Vec::new();
+    let mut formula_writes: Vec<(TabId, RowId, ColId, TabId, RowId, ColId)> = Vec::new();
     let resolutions: HashMap<(TabId, RowId, ColId), Side> = choice.resolutions.iter().copied().collect();
     let wanted = |tab: TabId| choice.tabs.is_empty() || choice.tabs.contains(&tab);
     let mut tab_map: HashMap<TabId, TabId> = HashMap::new();
 
+    // Reserve every destination tab before writing formulas, including forward references.
     for tt in &theirs.tabs {
-        if !wanted(tt.id) || choice.area.is_some_and(|(t, _)| t != tt.id) {
-            continue;
-        }
-        let in_base = base.tab(tt.id);
-        // A tab the copy added.
-        if in_base.is_none() {
-            let name = sim.unused_tab_name(&tt.name);
-            let content = theirs.capture_tab(tt.id).unwrap_or_default();
-            let op = sim.prepare_new_tab_with(&name, None, content);
-            sim.apply(&op, &actor)?;
-            ops.push(op);
-            plan.tabs_added.push(name);
-            continue;
-        }
-        let bt = in_base.expect("checked");
-        // The sheet removed the tab since the copy was made: the copy's version comes back as a new tab.
-        if sim.tab(tt.id).is_none() {
-            let changed = !diff_tab_cells(base, bt, theirs, tt).is_empty();
-            if changed {
+        if let (Some(bt), Some(ot)) = (base.tab(tt.id), sim.tab(tt.id)) {
+            tab_map.insert(tt.id, tt.id);
+            if wanted(tt.id) && choice.area.is_none() && tt.name != bt.name && ot.name == bt.name {
                 let name = sim.unused_tab_name(&tt.name);
-                let content = theirs.capture_tab(tt.id).unwrap_or_default();
-                let op = sim.prepare_new_tab_with(&name, None, content);
+                let op = Op::RenameTab { tab: tt.id, name };
                 sim.apply(&op, &actor)?;
                 ops.push(op);
-                plan.tabs_added.push(name);
             }
-            continue;
         }
-        tab_map.insert(tt.id, tt.id);
-        // Rename.
-        let ot_name = sim.tab(tt.id).expect("exists").name.clone();
-        if tt.name != bt.name && ot_name == bt.name && choice.area.is_none() {
-            let name = if sim.tab_by_name(&tt.name).is_some() { sim.unused_tab_name(&tt.name) } else { tt.name.clone() };
-            let op = Op::RenameTab { tab: tt.id, name };
+    }
+    let mut added = Vec::new();
+    for tt in &theirs.tabs {
+        if !wanted(tt.id) || choice.area.is_some_and(|(t, _)| t != tt.id) { continue; }
+        let needs_tab = base.tab(tt.id).is_none() || (sim.tab(tt.id).is_none()
+            && (base.capture_tab(tt.id) != theirs.capture_tab(tt.id) || base.tab(tt.id).is_some_and(|t| t.name != tt.name || t.color != tt.color)));
+        if needs_tab {
+            let name = sim.unused_tab_name(&tt.name);
+            let op = sim.prepare_add_tab(&name, None);
+            let id = match &op { Op::AddTab { tab, .. } => *tab, _ => unreachable!("add tab") };
             sim.apply(&op, &actor)?;
             ops.push(op);
+            tab_map.insert(tt.id, id);
+            added.push((tt.id, id));
+            plan.tabs_added.push(name);
         }
+    }
+    // Formula groups retain source IDs; rendering them with the destination labels remaps
+    // references without replacing text inside strings or function names.
+    let mut referenced = theirs.clone();
+    for tab in &mut referenced.tabs {
+        tab.name = tab_map.get(&tab.id).and_then(|id| sim.tab(*id)).map(|t| t.name.clone())
+            .unwrap_or_else(|| format!("Unmerged copy tab {}", tab.id));
+    }
+    for &(source, destination) in &added {
+        let tt = theirs.tab(source).expect("source tab");
+        if let Some((_, area)) = choice.area {
+            let op = Op::Extend { tab: destination, rows: (area.r2 + 1).min(tt.rows.len()), cols: (area.c2 + 1).min(tt.cols.len()) };
+            sim.apply(&op, &actor)?;
+            ops.push(op);
+            let dt = sim.tab(destination).expect("destination");
+            let cells = occupied_set(tt).into_iter().filter_map(|(r,c)| {
+                let (pr,pc) = tt.rows.pos_of(r).zip(tt.cols.pos_of(c))?;
+                if !area.contains(CellPos::new(pr,pc)) { return None; }
+                Some(write_from(&referenced, tt, r, c, dt.rows.id_at(pr)?, dt.cols.id_at(pc)?))
+            }).collect::<Vec<_>>();
+            plan.cells_taken += cells.len() as u64;
+            if !cells.is_empty() {
+                let op = Op::SetCells { tab: destination, cells };
+                sim.apply(&op, &actor)?;
+                ops.push(op);
+            }
+        } else {
+            let mut content = referenced.capture_tab(source).unwrap_or_default();
+            if let Some(code) = &mut content.code {
+                code.inputs = code.inputs.iter().filter_map(|id| tab_map.get(id).copied()).collect();
+            }
+            let op = Op::ReplaceTab { tab: destination, content: Box::new(content) };
+            sim.apply(&op, &actor)?;
+            ops.push(op);
+            if let Some(color) = &tt.color {
+                let op = Op::TabProps { tab: destination, props: crate::ops::TabProps { color: Some(Some(color.clone())), ..Default::default() } };
+                sim.apply(&op, &actor)?;
+                ops.push(op);
+            }
+        }
+        let dt = sim.tab(destination).expect("destination");
+        plan.ids.rows.insert(source, tt.rows.ids().iter().zip(dt.rows.ids()).map(|(&a,&b)|(a,b)).collect());
+        plan.ids.cols.insert(source, tt.cols.ids().iter().zip(dt.cols.ids()).map(|(&a,&b)|(a,b)).collect());
+        for (row,col) in tt.occupied() {
+            let Some((r,c)) = tt.rows.pos_of(row).zip(tt.cols.pos_of(col)) else { continue };
+            if choice.area.is_some_and(|(_,area)| !area.contains(CellPos::new(r,c))) { continue; }
+            if tt.cell_by_id(row,col).formula.is_some() {
+                if let Some((dr,dc)) = dt.rows.id_at(r).zip(dt.cols.id_at(c)) {
+                    formula_writes.push((source,row,col,destination,dr,dc));
+                }
+            }
+        }
+    }
+    for tt in &theirs.tabs {
+        if !wanted(tt.id) || choice.area.is_some_and(|(t, _)| t != tt.id) || added.iter().any(|(id,_)| *id == tt.id) { continue; }
+        let Some(bt) = base.tab(tt.id) else { continue };
+        if sim.tab(tt.id).is_none() { continue; }
         let mut row_map: HashMap<RowId, RowId> = HashMap::new();
         let mut col_map: HashMap<ColId, ColId> = HashMap::new();
         if choice.area.is_none() {
@@ -438,6 +491,35 @@ pub fn plan_merge(base: &Workbook, ours: &Workbook, theirs: &Workbook, choice: &
                 ops.push(op);
             }
         }
+        // A range still needs unambiguous row/column identities. Introduce the selected
+        // scaffold in source order, retaining shared rows instead of aliasing two source IDs
+        // onto one parent row when the copy inserted a row in the middle.
+        if let Some((_, area)) = choice.area {
+            for rows in [true,false] {
+                let (axis,base_axis,last) = if rows { (&tt.rows,&bt.rows,area.r2) } else { (&tt.cols,&bt.cols,area.c2) };
+                let map = if rows { &mut row_map } else { &mut col_map };
+                for pos in 0..axis.len().min(last.saturating_add(1)) {
+                    let id=axis.id_at(pos).expect("position");
+                    let parent=sim.tab(tt.id).expect("exists");
+                    let parent_axis=if rows { &parent.rows } else { &parent.cols };
+                    if parent_axis.pos_of(id).is_some() && base_axis.pos_of(id).is_some() { continue; }
+                    let previous=axis.ids()[..pos as usize].iter().rev().find_map(|id| parent_axis.pos_of(*map.get(id).unwrap_or(id)));
+                    let at=previous.map_or(0,|p|p+1);
+                    let tail = axis.ids()[pos as usize+1..].iter().all(|id|base_axis.pos_of(*id).is_none());
+                    if tail && parent_axis.id_at(at).is_some_and(|target| base_axis.pos_of(target).is_none()) {
+                        map.insert(id,parent_axis.id_at(at).expect("position"));
+                        continue;
+                    }
+                    let op=sim.prepare_insert(tt.id,rows,at,1)?;
+                    sim.apply(&op,&actor)?;
+                    ops.push(op);
+                    let parent=sim.tab(tt.id).expect("exists");
+                    let parent_axis=if rows { &parent.rows } else { &parent.cols };
+                    map.insert(id,parent_axis.id_at(at).expect("inserted"));
+                    if rows { plan.rows_added+=1; }
+                }
+            }
+        }
         // Cells.
         let ot = sim.tab(tt.id).expect("exists").clone();
         let mut ids: Vec<(RowId, ColId)> = occupied_set(tt).union(&occupied_set(bt)).copied().collect();
@@ -467,7 +549,8 @@ pub fn plan_merge(base: &Workbook, ours: &Workbook, theirs: &Workbook, choice: &
             let ours_changed = !sb.same(&so);
             if !ours_changed || so.same(&st) {
                 if !so.same(&st) {
-                    writes.push(write_from(theirs, tt, r, c, orow, ocol));
+                    if tt.cell_by_id(r,c).formula.is_some() { formula_writes.push((tt.id,r,c,tt.id,orow,ocol)); }
+                    writes.push(write_from(&referenced, tt, r, c, orow, ocol));
                     plan.cells_taken += 1;
                 }
                 continue;
@@ -486,7 +569,8 @@ pub fn plan_merge(base: &Workbook, ours: &Workbook, theirs: &Workbook, choice: &
                 resolved: side,
             });
             if side == Side::Theirs {
-                writes.push(write_from(theirs, tt, r, c, orow, ocol));
+                if tt.cell_by_id(r,c).formula.is_some() { formula_writes.push((tt.id,r,c,tt.id,orow,ocol)); }
+                writes.push(write_from(&referenced, tt, r, c, orow, ocol));
                 plan.cells_taken += 1;
             }
         }
@@ -495,21 +579,73 @@ pub fn plan_merge(base: &Workbook, ours: &Workbook, theirs: &Workbook, choice: &
             sim.apply(&op, &actor)?;
             ops.push(op);
         }
-        // Column widths and frozen panes the copy changed.
+        let destination = sim.tab(tt.id).expect("exists");
+        plan.ids.rows.insert(tt.id, tt.rows.ids().iter().filter_map(|&id| {
+            let mapped = *row_map.get(&id).unwrap_or(&id);
+            destination.rows.pos_of(mapped).map(|_| (id, mapped))
+        }).collect());
+        plan.ids.cols.insert(tt.id, tt.cols.ids().iter().filter_map(|&id| {
+            let mapped = *col_map.get(&id).unwrap_or(&id);
+            destination.cols.pos_of(mapped).map(|_| (id, mapped))
+        }).collect());
+        // Merge each layout property independently, retaining unrelated changes on the parent.
         if choice.area.is_none() {
-            let widths: Vec<(ColId, Option<f32>)> = tt
-                .col_widths
-                .iter()
-                .filter(|(id, w)| bt.col_widths.get(id) != Some(w))
-                .map(|(id, w)| (*col_map.get(id).unwrap_or(id), Some(*w)))
-                .collect();
-            if !widths.is_empty() {
-                let op = Op::ColWidths { tab: tt.id, widths };
-                sim.apply(&op, &actor)?;
-                ops.push(op);
+            let original = ours.tab(tt.id).unwrap_or(&ot);
+            let mut merged = sim.tab(tt.id).expect("exists").clone();
+            macro_rules! property {
+                ($field:ident) => {
+                    if tt.$field != bt.$field && (original.$field == bt.$field || choice.default == Side::Theirs) {
+                        merged.$field = tt.$field.clone();
+                    }
+                };
             }
+            property!(frozen_rows); property!(frozen_cols); property!(color);
+            if tt.code != bt.code && (original.code == bt.code || choice.default == Side::Theirs) {
+                merged.code = tt.code.clone();
+                if let Some(code) = &mut merged.code {
+                    code.inputs = code.inputs.iter().filter_map(|id|tab_map.get(id).copied()).collect();
+                }
+            }
+            for id in bt.col_widths.keys().chain(tt.col_widths.keys()).copied().collect::<HashSet<_>>() {
+                let to = *col_map.get(&id).unwrap_or(&id);
+                if tt.col_widths.get(&id) != bt.col_widths.get(&id)
+                    && (original.col_widths.get(&to) == bt.col_widths.get(&id) || choice.default == Side::Theirs) {
+                    match tt.col_widths.get(&id) { Some(w) => { merged.col_widths.insert(to, *w); }, None => { merged.col_widths.remove(&to); } }
+                }
+            }
+            for id in bt.row_heights.keys().chain(tt.row_heights.keys()).copied().collect::<HashSet<_>>() {
+                let to = *row_map.get(&id).unwrap_or(&id);
+                if tt.row_heights.get(&id) != bt.row_heights.get(&id)
+                    && (original.row_heights.get(&to) == bt.row_heights.get(&id) || choice.default == Side::Theirs) {
+                    match tt.row_heights.get(&id) { Some(h) => { merged.row_heights.insert(to, *h); }, None => { merged.row_heights.remove(&to); } }
+                }
+            }
+            for (rows, b, t) in [(true, &bt.hidden_rows, &tt.hidden_rows), (false, &bt.hidden_cols, &tt.hidden_cols)] {
+                let map = if rows { &row_map } else { &col_map };
+                let hidden = if rows { &mut merged.hidden_rows } else { &mut merged.hidden_cols };
+                for id in b.iter().chain(t).copied().collect::<HashSet<_>>() {
+                    if b.contains(&id) != t.contains(&id) {
+                        let to = *map.get(&id).unwrap_or(&id);
+                        hidden.retain(|i| *i != to);
+                        if t.contains(&id) { hidden.push(to); }
+                    }
+                }
+            }
+            if tt.merges != bt.merges && (original.merges == bt.merges || choice.default == Side::Theirs) {
+                merged.merges = tt.merges.iter().map(|m| crate::model::IdRect {
+                    r1: *row_map.get(&m.r1).unwrap_or(&m.r1), r2: *row_map.get(&m.r2).unwrap_or(&m.r2),
+                    c1: *col_map.get(&m.c1).unwrap_or(&m.c1), c2: *col_map.get(&m.c2).unwrap_or(&m.c2),
+                }).collect();
+            }
+            if tt.format_rules != bt.format_rules && (original.format_rules == bt.format_rules || choice.default == Side::Theirs) {
+                merged.format_rules = tt.format_rules.iter().cloned().map(|mut r| {
+                    r.area = crate::model::IdRect { r1:*row_map.get(&r.area.r1).unwrap_or(&r.area.r1),r2:*row_map.get(&r.area.r2).unwrap_or(&r.area.r2),c1:*col_map.get(&r.area.c1).unwrap_or(&r.area.c1),c2:*col_map.get(&r.area.c2).unwrap_or(&r.area.c2) };r
+                }).collect();
+            }
+            restore_tab_metadata(&mut sim, &mut ops, &merged)?;
         }
     }
+    plan.ids.tabs = tab_map.iter().map(|(&a,&b)|(a,b)).collect();
     // Tabs the copy removed (only when the sheet left them alone).
     if choice.tabs.is_empty() && choice.area.is_none() {
         for bt in &base.tabs {
@@ -526,23 +662,237 @@ pub fn plan_merge(base: &Workbook, ours: &Workbook, theirs: &Workbook, choice: &
                 plan.tabs_removed.push(name);
             }
         }
-        // Names and charts.
-        if theirs.names != base.names && sim.names == base.names {
-            let op = Op::SetNames { names: theirs.names.clone() };
+        // Functions follow the same three-way metadata policy as names.
+        if theirs.functions != base.functions && (sim.functions == base.functions || choice.default == Side::Theirs) {
+            let op = Op::SetFunctions { functions: theirs.functions.clone() };
             sim.apply(&op, &actor)?;
             ops.push(op);
         }
+        // Names and charts.
+        if theirs.names != base.names && same_names(&sim, base) {
+            let mut names = theirs.names.clone();
+            for name in &mut names {
+                let source_tab = name.tab.or_else(||theirs.tabs.first().map(|t|t.id));
+                if let Some(source_tab) = source_tab {
+                    if let Some(&destination) = tab_map.get(&source_tab) {
+                        name.text = mapped_reference_text(theirs,&sim,source_tab,destination,&name.text,&plan.ids);
+                    }
+                }
+                name.tab = name.tab.and_then(|id| tab_map.get(&id).copied());
+            }
+            let op = Op::SetNames { names };
+            sim.apply(&op, &actor)?;
+            ops.push(op);
+        }
+        for chart in &base.charts {
+            if !theirs.charts.iter().any(|c| c.id == chart.id)
+                && (sim.charts.iter().any(|c| same_chart(&sim,c,base,chart)) || choice.default == Side::Theirs) {
+                let op = Op::DeleteChart { id: chart.id.clone() };
+                sim.apply(&op, &actor)?;
+                ops.push(op);
+            }
+        }
         for chart in &theirs.charts {
-            if !base.charts.contains(chart) && sim.tab(chart.tab).is_some() {
-                let op = Op::PutChart { chart: chart.clone() };
+            if !base.charts.contains(chart) && tab_map.contains_key(&chart.tab) {
+                let mut chart = chart.clone();
+                let destination=tab_map[&chart.tab];
+                chart.range=mapped_reference_text(theirs,&sim,chart.tab,destination,&chart.range,&plan.ids);
+                chart.tab = destination;
+                let op = Op::PutChart { chart };
                 sim.apply(&op, &actor)?;
                 ops.push(op);
             }
         }
     }
-    let _ = tab_map;
+    plan.ids.tabs = tab_map.into_iter().collect();
+    // Every destination axis now exists, including referenced tabs that followed the formula's
+    // own tab. Translate reference targets by stable identity, preserving absolute/mixed refs.
+    let mut rewritten: BTreeMap<TabId,Vec<CellWrite>> = BTreeMap::new();
+    for (source,row,col,destination,drow,dcol) in formula_writes {
+        let tt=theirs.tab(source).expect("source formula tab");
+        let dt=sim.tab(destination).expect("destination formula tab");
+        let Some(source_pos)=tt.rows.pos_of(row).zip(tt.cols.pos_of(col)) else { continue };
+        let Some(dest_pos)=dt.rows.pos_of(drow).zip(dt.cols.pos_of(dcol)) else { continue };
+        let Some(group)=tt.cell_by_id(row,col).formula.and_then(|id|theirs.group(id)) else { continue };
+        let expr=crate::merge_ids::remap_expr_positions(theirs,&sim,source,destination,source_pos,dest_pos,&group.expr,&plan.ids);
+        rewritten.entry(destination).or_default().push(CellWrite {
+            row:drow,col:dcol,clear:true,formula:Some(FormulaAt { text:to_a1(&expr,dest_pos.0,dest_pos.1,&sim.names()),row:dest_pos.0,col:dest_pos.1 }),..Default::default()
+        });
+    }
+    for (tab,cells) in rewritten {
+        let op=Op::SetCells { tab,cells };
+        sim.apply(&op,&actor)?;
+        ops.push(op);
+    }
     plan.op = (!ops.is_empty()).then_some(Op::Batch { ops });
     Ok(plan)
+}
+
+fn mapped_reference_text(source:&Workbook,dest:&Workbook,source_tab:TabId,dest_tab:TabId,text:&str,ids:&crate::merge_ids::MergeIds)->String {
+    let Ok(expr)=crate::formula::parse::parse_formula(text,0,0,&source.names()) else { return text.into() };
+    let expr=crate::merge_ids::remap_expr_positions(source,dest,source_tab,dest_tab,(0,0),(0,0),&expr,ids);
+    to_a1(&expr,0,0,&dest.names())
+}
+fn reference_key(wb:&Workbook,tab:Option<TabId>,text:&str)->String {
+    let Some(tab)=tab.or_else(||wb.tabs.first().map(|t|t.id)) else { return text.into() };
+    crate::formula::parse::parse_formula(text,0,0,&wb.names())
+        .map(|expr|crate::formula::identity::stable_key(wb,tab,0,0,&expr)).unwrap_or_else(|_|text.into())
+}
+fn same_names(a:&Workbook,b:&Workbook)->bool {
+    a.names.len()==b.names.len() && a.names.iter().zip(&b.names).all(|(a_name,b_name)|
+        a_name.name==b_name.name && a_name.tab==b_name.tab && reference_key(a,a_name.tab,&a_name.text)==reference_key(b,b_name.tab,&b_name.text))
+}
+fn same_chart(a:&Workbook,a_chart:&crate::model::Chart,b:&Workbook,b_chart:&crate::model::Chart)->bool {
+    let mut left=a_chart.clone();let mut right=b_chart.clone();
+    left.range=reference_key(a,Some(left.tab),&left.range);right.range=reference_key(b,Some(right.tab),&right.range);
+    left==right
+}
+
+/// Restores a historical state as ordinary, invertible edits. Existing row and column identities survive,
+/// including identities removed after the selected version. A range restores cells at its current addresses.
+pub fn plan_restore(current: &Workbook, target: &Workbook, only: Option<(TabId, Option<Rect>)>) -> Result<Option<Op>, OpError> {
+    let mut sim = current.clone();
+    let mut ops = Vec::new();
+    if let Some((id, Some(area))) = only {
+        let source = target.tab(id).ok_or(OpError::NoSuchTab(id))?;
+        let mut writes = Vec::new();
+        for row in area.r1..=area.r2 {
+            for col in area.c1..=area.c2 {
+                let w = match source.rows.id_at(row).zip(source.cols.id_at(col)) {
+                    Some((r, c)) => write_from(target, source, r, c, 0, 0),
+                    None => CellWrite { clear: true, ..Default::default() },
+                };
+                writes.push((row, col, w));
+            }
+        }
+        return sim.prepare_writes(id, writes).map(Some);
+    }
+    if target.tabs.is_empty() { return Err(OpError::LastTab); }
+    let selected: Vec<_> = target.tabs.iter().filter(|t| only.is_none_or(|(id, _)| id == t.id)).collect();
+    if let Some((id, _)) = only {
+        if selected.is_empty() { return Err(OpError::NoSuchTab(id)); }
+    }
+    // Temporary names allow renamed tabs to exchange names without collisions.
+    for t in &selected {
+        if sim.tab(t.id).is_some_and(|s| s.name != t.name) {
+            let name = sim.unused_tab_name(&format!("Restoring {}", t.id));
+            append_restore(&mut sim, &mut ops, Op::RenameTab { tab: t.id, name })?;
+        }
+    }
+    for t in &selected {
+        if sim.tab(t.id).is_none() {
+            let name = sim.unused_tab_name(&format!("Restoring {}", t.id));
+            append_restore(&mut sim, &mut ops, Op::AddTab { tab: t.id, name, index: None })?;
+        }
+    }
+    if only.is_none() {
+        for t in &current.tabs {
+            if target.tab(t.id).is_none() { append_restore(&mut sim, &mut ops, Op::DeleteTab { tab: t.id })?; }
+        }
+    }
+    for t in &selected {
+        if sim.tab(t.id).expect("exists").name != t.name {
+            append_restore(&mut sim, &mut ops, Op::RenameTab { tab: t.id, name: t.name.clone() })?;
+        }
+        // Reintroduce the exact historical IDs instead of allocating replacements.
+        for rows in [true, false] {
+            let desired = if rows { &t.rows } else { &t.cols };
+            let s = sim.tab(t.id).expect("exists");
+            let axis = if rows { &s.rows } else { &s.cols };
+            let gone: Vec<_> = axis.ids().iter().copied().filter(|i| desired.pos_of(*i).is_none()).collect();
+            if !gone.is_empty() {
+                let op = if rows { Op::DeleteRows { tab: t.id, ids: gone } } else { Op::DeleteCols { tab: t.id, ids: gone } };
+                append_restore(&mut sim, &mut ops, op)?;
+            }
+            let s = sim.tab(t.id).expect("exists");
+            let axis = if rows { &s.rows } else { &s.cols };
+            let positions: Vec<_> = desired.ids().iter().enumerate().filter(|(_, id)| axis.pos_of(**id).is_none()).map(|(p, id)| (p as u32, *id)).collect();
+            if !positions.is_empty() {
+                let op = if rows { Op::RestoreRows { tab: t.id, positions, cells: vec![], formulas: vec![] } }
+                    else { Op::RestoreCols { tab: t.id, positions, cells: vec![], formulas: vec![] } };
+                append_restore(&mut sim, &mut ops, op)?;
+            }
+            let s = sim.tab(t.id).expect("exists");
+            let axis = if rows { &s.rows } else { &s.cols };
+            if axis.ids() != desired.ids() {
+                append_restore(&mut sim, &mut ops, Op::Reorder { tab: t.id, rows, ids: desired.ids().to_vec() })?;
+            }
+        }
+    }
+    // All tabs and axes exist before formulas referring to them are restored.
+    for t in &selected {
+        let s = sim.tab(t.id).expect("exists");
+        let ids: HashSet<_> = occupied_set(s).union(&occupied_set(t)).copied().collect();
+        let mut writes = Vec::new();
+        for (r, c) in ids {
+            if t.rows.pos_of(r).is_some() && t.cols.pos_of(c).is_some()
+                && !summary(&sim, s, r, c).same(&summary(target, t, r, c)) {
+                writes.push(write_from(target, t, r, c, r, c));
+            }
+        }
+        if !writes.is_empty() { append_restore(&mut sim, &mut ops, Op::SetCells { tab: t.id, cells: writes })?; }
+        restore_tab_metadata(&mut sim, &mut ops, t)?;
+    }
+    let wanted = |id| only.is_none_or(|(t, _)| t == id);
+    for c in current.charts.iter().filter(|c| wanted(c.tab)) {
+        if !target.charts.iter().any(|x| x.id == c.id) { append_restore(&mut sim, &mut ops, Op::DeleteChart { id: c.id.clone() })?; }
+    }
+    for c in target.charts.iter().filter(|c| wanted(c.tab)) {
+        if !sim.charts.contains(c) { append_restore(&mut sim, &mut ops, Op::PutChart { chart: c.clone() })?; }
+    }
+    for p in current.protections.iter().filter(|p| wanted(p.tab)) {
+        if !target.protections.iter().any(|x| x.id == p.id) { append_restore(&mut sim, &mut ops, Op::DeleteProtection { id: p.id.clone() })?; }
+    }
+    for p in target.protections.iter().filter(|p| wanted(p.tab)) {
+        if !sim.protections.contains(p) { append_restore(&mut sim, &mut ops, Op::PutProtection { protection: p.clone() })?; }
+    }
+    if only.is_none() {
+        for (index, t) in target.tabs.iter().enumerate() {
+            if sim.tabs[index].id != t.id { append_restore(&mut sim, &mut ops, Op::MoveTab { tab: t.id, index })?; }
+        }
+        if sim.functions != target.functions { append_restore(&mut sim, &mut ops, Op::SetFunctions { functions: target.functions.clone() })?; }
+        if sim.names != target.names { append_restore(&mut sim, &mut ops, Op::SetNames { names: target.names.clone() })?; }
+        if sim.settings != target.settings { append_restore(&mut sim, &mut ops, Op::Settings { settings: target.settings.clone() })?; }
+    }
+    Ok((!ops.is_empty()).then_some(Op::Batch { ops }))
+}
+
+fn append_restore(sim: &mut Workbook, ops: &mut Vec<Op>, op: Op) -> Result<(), OpError> {
+    sim.apply(&op, &Actor { account: "restore", at: 0 })?;
+    ops.push(op);
+    Ok(())
+}
+
+fn restore_tab_metadata(sim: &mut Workbook, ops: &mut Vec<Op>, target: &Tab) -> Result<(), OpError> {
+    let s = sim.tab(target.id).ok_or(OpError::NoSuchTab(target.id))?.clone();
+    let props = crate::ops::TabProps {
+        frozen_rows: (s.frozen_rows != target.frozen_rows).then_some(target.frozen_rows),
+        frozen_cols: (s.frozen_cols != target.frozen_cols).then_some(target.frozen_cols),
+        color: (s.color != target.color).then(|| target.color.clone()),
+        code: (s.code != target.code).then(|| target.code.clone()),
+        format_rules: (s.format_rules != target.format_rules).then(|| target.format_rules.clone()),
+    };
+    if props != Default::default() { append_restore(sim, ops, Op::TabProps { tab: target.id, props })?; }
+    let widths = s.col_widths.keys().chain(target.col_widths.keys()).copied().collect::<HashSet<_>>()
+        .into_iter().filter(|id| s.col_widths.get(id) != target.col_widths.get(id)).map(|id| (id, target.col_widths.get(&id).copied())).collect::<Vec<_>>();
+    if !widths.is_empty() { append_restore(sim, ops, Op::ColWidths { tab: target.id, widths })?; }
+    let heights = s.row_heights.keys().chain(target.row_heights.keys()).copied().collect::<HashSet<_>>()
+        .into_iter().filter(|id| s.row_heights.get(id) != target.row_heights.get(id)).map(|id| (id, target.row_heights.get(&id).copied())).collect::<Vec<_>>();
+    if !heights.is_empty() { append_restore(sim, ops, Op::RowHeights { tab: target.id, heights })?; }
+    for (rows, old, new) in [(true, &s.hidden_rows, &target.hidden_rows), (false, &s.hidden_cols, &target.hidden_cols)] {
+        for hidden in [true, false] {
+            let (a, b) = if hidden { (new, old) } else { (old, new) };
+            let ids = a.iter().filter(|i| !b.contains(i)).copied().collect::<Vec<_>>();
+            if !ids.is_empty() { append_restore(sim, ops, Op::Hide { tab: target.id, rows, ids, hidden })?; }
+        }
+    }
+    for area in &s.merges {
+        if !target.merges.contains(area) { append_restore(sim, ops, Op::Unmerge { tab: target.id, area: area.clone() })?; }
+    }
+    for area in &target.merges {
+        if !s.merges.contains(area) { append_restore(sim, ops, Op::Merge { tab: target.id, area: area.clone() })?; }
+    }
+    Ok(())
 }
 
 fn diff_tab_cells(a: &Workbook, at: &Tab, b: &Workbook, bt: &Tab) -> Vec<(RowId, ColId)> {

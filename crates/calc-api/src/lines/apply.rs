@@ -22,7 +22,7 @@ use calc_engine::{
 };
 use serde_json::{Value, json};
 
-use super::{OpKind, registry::LineState, task::Stage, view};
+use super::{registry::LineState, task::Stage, view};
 use crate::error::{ApiError, ApiResult};
 
 /// Operations writing more cells than this are kept in history as one bulk change per tab, not cell by cell.
@@ -41,13 +41,15 @@ pub(crate) struct Ctx {
     pub at: i64,
     /// Errors name the failing edit (`details.index`) and answer 422.
     pub index_errors: bool,
-    pub kind: OpKind,
     pub summary: Option<String>,
 }
 
 impl Ctx {
     fn actor(&self) -> Actor<'_> {
-        Actor { account: &self.author, at: self.at }
+        Actor {
+            account: &self.author,
+            at: self.at,
+        }
     }
 }
 
@@ -156,23 +158,38 @@ pub(crate) fn in_place(st: &mut LineState, op: Op, ctx: &Ctx) -> Result<Done, Fa
             let merged = merge(vec![applied]);
             let info = describe(&st.wb, std::slice::from_ref(&op), &merged, ctx);
             update_used(st, &info.used);
-            Ok(Done { op, inverse: merged.inverse, staged: false, info })
+            Ok(Done {
+                op,
+                inverse: merged.inverse,
+                staged: false,
+                info,
+            })
         }
         Err(e) => {
             // The engine refuses before changing anything, except for formulas (caught by the checks) and steps
             // of a batch after the first.
             let mutated = matches!(e, OpError::Formula { .. }) || matches!(op, Op::Batch { .. });
-            Err(Failure { error: indexed(e.into(), 0, ctx), mutated })
+            Err(Failure {
+                error: indexed(e.into(), 0, ctx),
+                mutated,
+            })
         }
     }
 }
 
 /// Applies a checked operation to a copy of the workbook.
 pub(crate) fn on_copy(wb: &mut Workbook, op: Op, ctx: &Ctx) -> ApiResult<Done> {
-    let applied = wb.apply(&op, &ctx.actor()).map_err(|e| indexed(e.into(), 0, ctx))?;
+    let applied = wb
+        .apply(&op, &ctx.actor())
+        .map_err(|e| indexed(e.into(), 0, ctx))?;
     let merged = merge(vec![applied]);
     let info = describe(wb, std::slice::from_ref(&op), &merged, ctx);
-    Ok(Done { op, inverse: merged.inverse, staged: false, info })
+    Ok(Done {
+        op,
+        inverse: merged.inverse,
+        staged: false,
+        info,
+    })
 }
 
 /// Applies every stage, in order, to a copy of the workbook.
@@ -189,7 +206,9 @@ pub(crate) fn staged(wb: &mut Workbook, stages: Vec<Stage>, ctx: &Ctx) -> ApiRes
             continue;
         }
         check(wb, &op, ctx).map_err(|e| indexed(e, i, ctx))?;
-        let a = wb.apply(&op, &ctx.actor()).map_err(|e| indexed(e.into(), i, ctx))?;
+        let a = wb
+            .apply(&op, &ctx.actor())
+            .map_err(|e| indexed(e.into(), i, ctx))?;
         ops.push(op);
         applied.push(a);
     }
@@ -199,12 +218,27 @@ pub(crate) fn staged(wb: &mut Workbook, stages: Vec<Stage>, ctx: &Ctx) -> ApiRes
     let merged = merge(applied);
     let info = describe(wb, &ops, &merged, ctx);
     let staged = ops.len() > 1;
-    let op = if ops.len() == 1 { ops.pop().expect("one") } else { Op::Batch { ops } };
-    Ok(Some(Done { op, inverse: merged.inverse, staged, info }))
+    let op = if ops.len() == 1 {
+        ops.pop().expect("one")
+    } else {
+        Op::Batch { ops }
+    };
+    Ok(Some(Done {
+        op,
+        inverse: merged.inverse,
+        staged,
+        info,
+    }))
 }
 
 /// Replays a saved operation (loading a line, rebuilding a version).
-pub(crate) fn replay(wb: &mut Workbook, op: &Op, staged: bool, account: &str, at: i64) -> Result<(), OpError> {
+pub(crate) fn replay(
+    wb: &mut Workbook,
+    op: &Op,
+    staged: bool,
+    account: &str,
+    at: i64,
+) -> Result<(), OpError> {
     let actor = Actor { account, at };
     match (staged, op) {
         (true, Op::Batch { ops }) => {
@@ -258,7 +292,9 @@ pub(crate) fn flatten<'a>(op: &'a Op, out: &mut Vec<&'a Op>) {
 pub(crate) fn is_noop(wb: &Workbook, op: &Op) -> bool {
     match op {
         Op::Batch { ops } => ops.iter().all(|o| is_noop(wb, o)),
-        Op::Extend { tab, rows, cols } => wb.tab(*tab).is_some_and(|t| *rows <= t.rows.len() && *cols <= t.cols.len()),
+        Op::Extend { tab, rows, cols } => wb
+            .tab(*tab)
+            .is_some_and(|t| *rows <= t.rows.len() && *cols <= t.cols.len()),
         Op::SetCells { cells, .. } => cells.is_empty(),
         Op::DeleteRows { ids, .. }
         | Op::DeleteCols { ids, .. }
@@ -274,15 +310,19 @@ pub(crate) fn is_noop(wb: &Workbook, op: &Op) -> bool {
                         return false;
                     }
                     pos.sort_unstable();
-                    pos.iter().zip(ids).all(|(&p, &id)| axis.id_at(p) == Some(id))
+                    pos.iter()
+                        .zip(ids)
+                        .all(|(&p, &id)| axis.id_at(p) == Some(id))
                 })
         }
         Op::ColWidths { widths, .. } => widths.is_empty(),
         Op::RowHeights { heights, .. } => heights.is_empty(),
         Op::RenameTab { tab, name } => wb.tab(*tab).is_some_and(|t| t.name == *name),
-        Op::MoveTab { tab, index } => {
-            wb.tabs.iter().position(|t| t.id == *tab).is_some_and(|p| p == (*index).min(wb.tabs.len().saturating_sub(1)))
-        }
+        Op::MoveTab { tab, index } => wb
+            .tabs
+            .iter()
+            .position(|t| t.id == *tab)
+            .is_some_and(|p| p == (*index).min(wb.tabs.len().saturating_sub(1))),
         _ => false,
     }
 }
@@ -290,6 +330,19 @@ pub(crate) fn is_noop(wb: &Workbook, op: &Op) -> bool {
 /// Checks what the engine would only find out part way: formulas that can't be read, and protections.
 pub(crate) fn check(wb: &Workbook, op: &Op, ctx: &Ctx) -> ApiResult<()> {
     validate_formulas(wb, op)?;
+    if ctx.author != ctx.owner {
+        let mut flat = Vec::new();
+        flatten(op, &mut flat);
+        if flat
+            .iter()
+            .any(|op| matches!(op, Op::PutProtection { .. } | Op::DeleteProtection { .. }))
+        {
+            return Err(ApiError::not_allowed(
+                "Only the sheet's owner can change protections.",
+                "Ask the owner to restore or change these protections.",
+            ));
+        }
+    }
     protection(wb, op, ctx)
 }
 
@@ -301,7 +354,13 @@ struct Virtual<'a> {
 
 impl Virtual<'_> {
     fn axis_pos(axis: &calc_engine::model::Axis, id: u32) -> u32 {
-        axis.pos_of(id).unwrap_or_else(|| if id >= axis.next_id() { axis.len() + (id - axis.next_id()) } else { u32::MAX })
+        axis.pos_of(id).unwrap_or_else(|| {
+            if id >= axis.next_id() {
+                axis.len() + (id - axis.next_id())
+            } else {
+                u32::MAX
+            }
+        })
     }
 
     fn pos(&self, tab: TabId, row: RowId, col: ColId) -> Option<(u32, u32)> {
@@ -352,7 +411,18 @@ fn validate_formulas(wb: &Workbook, op: &Op) -> ApiResult<()> {
                     check_write(wb, *tab, w)?;
                 }
             }
-            Op::RestoreRows { tab, cells, formulas, .. } | Op::RestoreCols { tab, cells, formulas, .. } => {
+            Op::RestoreRows {
+                tab,
+                cells,
+                formulas,
+                ..
+            }
+            | Op::RestoreCols {
+                tab,
+                cells,
+                formulas,
+                ..
+            } => {
                 for w in cells {
                     check_write(wb, *tab, w)?;
                 }
@@ -394,7 +464,13 @@ pub(crate) fn op_tab(o: &Op) -> Option<TabId> {
         | Op::RestoreTab { tab, .. } => Some(*tab),
         Op::PutChart { chart } => Some(chart.tab),
         Op::PutProtection { protection } => Some(protection.tab),
-        Op::SetNames { .. } | Op::DeleteChart { .. } | Op::DeleteProtection { .. } | Op::Settings { .. } | Op::Batch { .. } => None,
+        Op::SetNames { .. }
+        | Op::SetFunctions { .. }
+        | Op::JavascriptResults { .. }
+        | Op::DeleteChart { .. }
+        | Op::DeleteProtection { .. }
+        | Op::Settings { .. }
+        | Op::Batch { .. } => None,
     }
 }
 
@@ -417,7 +493,10 @@ fn blocking_with_new_ids<'a>(wb: &'a Workbook, op: &Op, account: &str) -> Option
             }
             match (&p.area, rect) {
                 (None, _) => true,
-                (Some(a), Some(r)) => wb.tab(tab).and_then(|t| t.pos_rect(a)).is_some_and(|pr| pr.intersects(&r)),
+                (Some(a), Some(r)) => wb
+                    .tab(tab)
+                    .and_then(|t| t.pos_rect(a))
+                    .is_some_and(|pr| pr.intersects(&r)),
                 (Some(_), None) => true,
             }
         })
@@ -427,12 +506,14 @@ fn blocking_with_new_ids<'a>(wb: &'a Workbook, op: &Op, account: &str) -> Option
     for o in flat {
         let found = match o {
             Op::Extend { .. } => None,
-            Op::SetCells { tab, cells } => {
-                cells.iter().find_map(|w| v.pos(*tab, w.row, w.col).and_then(|(r, c)| check(*tab, Some(Rect::new(r, c, r, c)))))
-            }
-            Op::StyleArea { tab, area, .. } | Op::ClearArea { tab, area, .. } | Op::Merge { tab, area } | Op::Unmerge { tab, area } => {
-                check(*tab, v.rect(*tab, area))
-            }
+            Op::SetCells { tab, cells } => cells.iter().find_map(|w| {
+                v.pos(*tab, w.row, w.col)
+                    .and_then(|(r, c)| check(*tab, Some(Rect::new(r, c, r, c))))
+            }),
+            Op::StyleArea { tab, area, .. }
+            | Op::ClearArea { tab, area, .. }
+            | Op::Merge { tab, area }
+            | Op::Unmerge { tab, area } => check(*tab, v.rect(*tab, area)),
             Op::InsertRows { tab, .. }
             | Op::InsertCols { tab, .. }
             | Op::DeleteRows { tab, .. }
@@ -475,8 +556,9 @@ fn protection(wb: &Workbook, op: &Op, ctx: &Ctx) -> ApiResult<()> {
             continue;
         }
         if let Some(t) = op_tab(o)
-            && let Some(p) =
-                wb.protections.iter().find(|p| p.tab == t && p.area.is_none() && !p.editors.iter().any(|e| *e == ctx.author))
+            && let Some(p) = wb.protections.iter().find(|p| {
+                p.tab == t && p.area.is_none() && !p.editors.iter().any(|e| *e == ctx.author)
+            })
         {
             return Err(protected(wb, p));
         }
@@ -487,11 +569,19 @@ fn protection(wb: &Workbook, op: &Op, ctx: &Ctx) -> ApiResult<()> {
 /// 403 `protected`, naming the protection.
 pub(crate) fn protected(wb: &Workbook, p: &Protection) -> ApiError {
     let tab_name = wb.tab(p.tab).map(|t| t.name.clone()).unwrap_or_default();
-    let place = match p.area.as_ref().and_then(|a| wb.tab(p.tab).and_then(|t| t.pos_rect(a))) {
+    let place = match p
+        .area
+        .as_ref()
+        .and_then(|a| wb.tab(p.tab).and_then(|t| t.pos_rect(a)))
+    {
         Some(r) => format!("{r} in {tab_name}"),
         None => format!("the whole tab {tab_name}"),
     };
-    let what = if p.description.trim().is_empty() { String::new() } else { format!(" (\"{}\")", p.description.trim()) };
+    let what = if p.description.trim().is_empty() {
+        String::new()
+    } else {
+        format!(" (\"{}\")", p.description.trim())
+    };
     ApiError::new(
         StatusCode::FORBIDDEN,
         "protected",
@@ -504,7 +594,10 @@ pub(crate) fn protected(wb: &Workbook, p: &Protection) -> ApiError {
 }
 
 fn workbook_size(wb: &Workbook) -> u64 {
-    wb.tabs.iter().map(|t| t.rows.len() as u64 * t.cols.len().max(1) as u64).sum()
+    wb.tabs
+        .iter()
+        .map(|t| t.rows.len() as u64 * t.cols.len().max(1) as u64)
+        .sum()
 }
 
 /// How many cells an operation writes or reads, roughly.
@@ -515,14 +608,20 @@ fn op_cost(wb: &Workbook, o: &Op) -> u64 {
             .tab(*tab)
             .and_then(|t| {
                 let r = Virtual { wb }.rect(*tab, area)?;
-                let rows = (r.r2.min(t.rows.len().saturating_sub(1)) + 1).saturating_sub(r.r1) as u64;
-                let cols = (r.c2.min(t.cols.len().saturating_sub(1)) + 1).saturating_sub(r.c1) as u64;
+                let rows =
+                    (r.r2.min(t.rows.len().saturating_sub(1)) + 1).saturating_sub(r.r1) as u64;
+                let cols =
+                    (r.c2.min(t.cols.len().saturating_sub(1)) + 1).saturating_sub(r.c1) as u64;
                 Some(rows * cols)
             })
             .unwrap_or(1),
-        Op::ReplaceTab { content, .. } | Op::RestoreTab { content, .. } => content.rows as u64 * content.cols.max(1) as u64,
+        Op::ReplaceTab { content, .. } | Op::RestoreTab { content, .. } => {
+            content.rows as u64 * content.cols.max(1) as u64
+        }
         Op::RestoreRows { cells, .. } | Op::RestoreCols { cells, .. } => cells.len() as u64,
-        Op::DeleteTab { tab } => wb.tab(*tab).map_or(1, |t| t.rows.len() as u64 * t.cols.len().max(1) as u64),
+        Op::DeleteTab { tab } => wb
+            .tab(*tab)
+            .map_or(1, |t| t.rows.len() as u64 * t.cols.len().max(1) as u64),
         _ => 1,
     }
 }
@@ -531,8 +630,16 @@ fn op_cost(wb: &Workbook, o: &Op) -> u64 {
 fn classify(wb: &Workbook, op: &Op) -> Mode {
     let mut flat = Vec::new();
     flatten(op, &mut flat);
-    let steps: Vec<&&Op> = flat.iter().filter(|o| !matches!(o, Op::Extend { .. })).collect();
-    if steps.iter().any(|o| matches!(o, Op::RestoreTab { .. } | Op::RestoreRows { .. } | Op::RestoreCols { .. })) {
+    let steps: Vec<&&Op> = flat
+        .iter()
+        .filter(|o| !matches!(o, Op::Extend { .. }))
+        .collect();
+    if steps.iter().any(|o| {
+        matches!(
+            o,
+            Op::RestoreTab { .. } | Op::RestoreRows { .. } | Op::RestoreCols { .. }
+        )
+    }) {
         return Mode::Heavy;
     }
     if steps.len() > 1
@@ -544,7 +651,11 @@ fn classify(wb: &Workbook, op: &Op) -> Mode {
     }
     let cost: u64 = flat.iter().map(|o| op_cost(wb, o)).sum();
     // A big change on the side lets readers keep reading meanwhile, when copying the workbook is the cheaper part.
-    if cost > 100_000 && cost * 2 > workbook_size(wb) { Mode::Heavy } else { Mode::Light }
+    if cost > 100_000 && cost * 2 > workbook_size(wb) {
+        Mode::Heavy
+    } else {
+        Mode::Light
+    }
 }
 
 /// The engine's answers for several operations applied one after another, as one.
@@ -615,13 +726,19 @@ fn safe_text(s: &str) -> String {
 
 impl Content {
     fn of_value(v: &calc_engine::Value) -> Self {
-        if v.is_empty() { Self::Empty } else { Self::Value(v.clone()) }
+        if v.is_empty() {
+            Self::Empty
+        } else {
+            Self::Value(v.clone())
+        }
     }
 
     fn json(&self) -> Value {
         match self {
             Self::Empty => json!({"t": "empty"}),
-            Self::Value(calc_engine::Value::Text(s)) if s.contains('\0') => json!({"t": "text", "v": safe_text(s)}),
+            Self::Value(calc_engine::Value::Text(s)) if s.contains('\0') => {
+                json!({"t": "text", "v": safe_text(s)})
+            }
             Self::Value(v) => view::value_json(v),
             Self::Formula(f) => Value::String(safe_text(f)),
         }
@@ -641,11 +758,18 @@ impl Content {
 }
 
 fn content_now(wb: &Workbook, tab: TabId, row: RowId, col: ColId) -> Content {
-    let Some(t) = wb.tab(tab) else { return Content::Empty };
-    let (Some(r), Some(c)) = (t.rows.pos_of(row), t.cols.pos_of(col)) else { return Content::Empty };
+    let Some(t) = wb.tab(tab) else {
+        return Content::Empty;
+    };
+    let (Some(r), Some(c)) = (t.rows.pos_of(row), t.cols.pos_of(col)) else {
+        return Content::Empty;
+    };
     let cell = t.cell_by_id(row, col);
     if cell.formula.is_some() {
-        return wb.formula_text(tab, r, c).map(|f| Content::Formula(format!("={f}"))).unwrap_or(Content::Empty);
+        return wb
+            .formula_text(tab, r, c)
+            .map(|f| Content::Formula(format!("={f}")))
+            .unwrap_or(Content::Empty);
     }
     if cell.spilled {
         return Content::Empty;
@@ -666,7 +790,11 @@ fn captured(w: &CellWrite) -> Option<Content> {
 }
 
 fn plural(n: u64, one: &str, many: &str) -> String {
-    if n == 1 { format!("1 {one}") } else { format!("{n} {many}") }
+    if n == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{n} {many}")
+    }
 }
 
 /// A tab's name now, or the name it had when the change removed it.
@@ -692,9 +820,20 @@ pub(crate) fn compose(cells: &BTreeMap<String, u64>, phrases: &[String]) -> Stri
         let names: Vec<&String> = cells.keys().collect();
         let place = match names.len() {
             1 => names[0].clone(),
-            n => format!("{} and {}", names[..n - 1].iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "), names[n - 1]),
+            n => format!(
+                "{} and {}",
+                names[..n - 1]
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                names[n - 1]
+            ),
         };
-        parts.push(format!("changed {} in {place}", plural(total, "cell", "cells")));
+        parts.push(format!(
+            "changed {} in {place}",
+            plural(total, "cell", "cells")
+        ));
     }
     let mut seen = HashSet::new();
     let distinct: Vec<&String> = phrases.iter().filter(|p| seen.insert(p.as_str())).collect();
@@ -713,17 +852,45 @@ pub(crate) fn compose(cells: &BTreeMap<String, u64>, phrases: &[String]) -> Stri
 fn phrase(wb: &Workbook, o: &Op, inverse: &[&Op]) -> Option<String> {
     let name = |t: TabId| tab_name(wb, inverse, t);
     Some(match o {
-        Op::InsertRows { tab, ids, .. } => format!("inserted {} in {}", plural(ids.len() as u64, "row", "rows"), name(*tab)),
-        Op::InsertCols { tab, ids, .. } => format!("inserted {} in {}", plural(ids.len() as u64, "column", "columns"), name(*tab)),
-        Op::DeleteRows { tab, ids } => format!("deleted {} in {}", plural(ids.len() as u64, "row", "rows"), name(*tab)),
-        Op::DeleteCols { tab, ids } => format!("deleted {} in {}", plural(ids.len() as u64, "column", "columns"), name(*tab)),
+        Op::InsertRows { tab, ids, .. } => format!(
+            "inserted {} in {}",
+            plural(ids.len() as u64, "row", "rows"),
+            name(*tab)
+        ),
+        Op::InsertCols { tab, ids, .. } => format!(
+            "inserted {} in {}",
+            plural(ids.len() as u64, "column", "columns"),
+            name(*tab)
+        ),
+        Op::DeleteRows { tab, ids } => format!(
+            "deleted {} in {}",
+            plural(ids.len() as u64, "row", "rows"),
+            name(*tab)
+        ),
+        Op::DeleteCols { tab, ids } => format!(
+            "deleted {} in {}",
+            plural(ids.len() as u64, "column", "columns"),
+            name(*tab)
+        ),
         Op::RestoreRows { tab, positions, .. } => {
-            format!("brought back {} in {}", plural(positions.len() as u64, "row", "rows"), name(*tab))
+            format!(
+                "brought back {} in {}",
+                plural(positions.len() as u64, "row", "rows"),
+                name(*tab)
+            )
         }
         Op::RestoreCols { tab, positions, .. } => {
-            format!("brought back {} in {}", plural(positions.len() as u64, "column", "columns"), name(*tab))
+            format!(
+                "brought back {} in {}",
+                plural(positions.len() as u64, "column", "columns"),
+                name(*tab)
+            )
         }
-        Op::Reorder { tab, rows, .. } => format!("reordered the {} of {}", if *rows { "rows" } else { "columns" }, name(*tab)),
+        Op::Reorder { tab, rows, .. } => format!(
+            "reordered the {} of {}",
+            if *rows { "rows" } else { "columns" },
+            name(*tab)
+        ),
         Op::AddTab { name: n, .. } => format!("added the tab {n}"),
         Op::DeleteTab { tab } => format!("deleted the tab {}", name(*tab)),
         Op::RestoreTab { tab, .. } => format!("brought back the tab {}", name(*tab)),
@@ -757,7 +924,9 @@ fn phrase(wb: &Workbook, o: &Op, inverse: &[&Op]) -> Option<String> {
         }
         Op::ColWidths { tab, .. } => format!("resized columns in {}", name(*tab)),
         Op::RowHeights { tab, .. } => format!("resized rows in {}", name(*tab)),
-        Op::Hide { tab, rows, hidden, .. } => format!(
+        Op::Hide {
+            tab, rows, hidden, ..
+        } => format!(
             "{} {} in {}",
             if *hidden { "hid" } else { "showed" },
             if *rows { "rows" } else { "columns" },
@@ -766,24 +935,42 @@ fn phrase(wb: &Workbook, o: &Op, inverse: &[&Op]) -> Option<String> {
         Op::Merge { tab, .. } => format!("merged cells in {}", name(*tab)),
         Op::Unmerge { tab, .. } => format!("unmerged cells in {}", name(*tab)),
         Op::SetNames { .. } => "changed the named ranges".to_owned(),
+        Op::SetFunctions { .. } => "changed JavaScript functions".to_owned(),
+        Op::JavascriptResults { .. } => "recalculated JavaScript formulas".to_owned(),
         Op::PutChart { chart } => {
-            let added = inverse.iter().any(|i| matches!(i, Op::DeleteChart { id } if *id == chart.id));
-            if added { format!("added a chart to {}", name(chart.tab)) } else { format!("changed a chart in {}", name(chart.tab)) }
+            let added = inverse
+                .iter()
+                .any(|i| matches!(i, Op::DeleteChart { id } if *id == chart.id));
+            if added {
+                format!("added a chart to {}", name(chart.tab))
+            } else {
+                format!("changed a chart in {}", name(chart.tab))
+            }
         }
         Op::DeleteChart { .. } => "deleted a chart".to_owned(),
         Op::PutProtection { protection } => {
-            let added = inverse.iter().any(|i| matches!(i, Op::DeleteProtection { id } if *id == protection.id));
+            let added = inverse
+                .iter()
+                .any(|i| matches!(i, Op::DeleteProtection { id } if *id == protection.id));
             let place = protection
                 .area
                 .as_ref()
                 .and_then(|a| wb.tab(protection.tab).and_then(|t| t.pos_rect(a)))
                 .map(|r| format!("{r} in {}", name(protection.tab)))
                 .unwrap_or_else(|| name(protection.tab));
-            if added { format!("protected {place}") } else { format!("changed the protection of {place}") }
+            if added {
+                format!("protected {place}")
+            } else {
+                format!("changed the protection of {place}")
+            }
         }
         Op::DeleteProtection { .. } => "removed a protection".to_owned(),
         Op::Settings { .. } => "changed the sheet's settings".to_owned(),
-        Op::Extend { .. } | Op::SetCells { .. } | Op::StyleArea { .. } | Op::ClearArea { .. } | Op::Batch { .. } => {
+        Op::Extend { .. }
+        | Op::SetCells { .. }
+        | Op::StyleArea { .. }
+        | Op::ClearArea { .. }
+        | Op::Batch { .. } => {
             return None;
         }
     })
@@ -796,7 +983,12 @@ fn rect_cells(r: &Rect) -> u64 {
 fn bounding(rects: &[Rect]) -> Rect {
     let mut b = rects[0];
     for r in &rects[1..] {
-        b = Rect::new(b.r1.min(r.r1), b.c1.min(r.c1), b.r2.max(r.r2), b.c2.max(r.c2));
+        b = Rect::new(
+            b.r1.min(r.r1),
+            b.c1.min(r.c1),
+            b.r2.max(r.r2),
+            b.c2.max(r.c2),
+        );
     }
     b
 }
@@ -842,8 +1034,12 @@ pub(crate) fn describe(wb: &Workbook, ops: &[Op], m: &Merged, ctx: &Ctx) -> Info
         }
     }
     // The engine's record of each overwritten cell; the first one is what the cell held before the change.
-    let overwritten: HashMap<(TabId, RowId, ColId), &Overwrite> =
-        m.overwritten.iter().rev().map(|o| ((o.tab, o.row, o.col), o)).collect();
+    let overwritten: HashMap<(TabId, RowId, ColId), &Overwrite> = m
+        .overwritten
+        .iter()
+        .rev()
+        .map(|o| ((o.tab, o.row, o.col), o))
+        .collect();
 
     // Every cell the change may have written.
     let mut touched: Vec<(TabId, RowId, ColId)> = Vec::new();
@@ -857,7 +1053,18 @@ pub(crate) fn describe(wb: &Workbook, ops: &[Op], m: &Merged, ctx: &Ctx) -> Info
                     }
                 }
             }
-            Op::RestoreRows { tab, cells, formulas, .. } | Op::RestoreCols { tab, cells, formulas, .. } => {
+            Op::RestoreRows {
+                tab,
+                cells,
+                formulas,
+                ..
+            }
+            | Op::RestoreCols {
+                tab,
+                cells,
+                formulas,
+                ..
+            } => {
                 for w in cells {
                     if seen.insert((*tab, w.row, w.col)) {
                         touched.push((*tab, w.row, w.col));
@@ -872,7 +1079,11 @@ pub(crate) fn describe(wb: &Workbook, ops: &[Op], m: &Merged, ctx: &Ctx) -> Info
             _ => {}
         }
     }
-    let mut more: Vec<(TabId, RowId, ColId)> = before.keys().filter(|k| !seen.contains(*k)).copied().collect();
+    let mut more: Vec<(TabId, RowId, ColId)> = before
+        .keys()
+        .filter(|k| !seen.contains(*k))
+        .copied()
+        .collect();
     more.sort_unstable();
     touched.extend(more);
 
@@ -882,14 +1093,18 @@ pub(crate) fn describe(wb: &Workbook, ops: &[Op], m: &Merged, ctx: &Ctx) -> Info
     let mut candidates = Vec::new();
     for &(tab, row, col) in &touched {
         let Some(t) = wb.tab(tab) else { continue };
-        let (Some(r), Some(c)) = (t.rows.pos_of(row), t.cols.pos_of(col)) else { continue };
+        let (Some(r), Some(c)) = (t.rows.pos_of(row), t.cols.pos_of(col)) else {
+            continue;
+        };
         if bulk_cells {
             *per_tab.entry(tab).or_default() += 1;
             continue;
         }
         let after = content_now(wb, tab, row, col);
         let capture = before.get(&(tab, row, col));
-        let was = capture.and_then(|w| captured(w)).unwrap_or_else(|| after.clone());
+        let was = capture
+            .and_then(|w| captured(w))
+            .unwrap_or_else(|| after.clone());
         let style_changed = capture
             .and_then(|w| w.style.as_ref())
             .is_some_and(|s| s != wb.style_of(t.cell_by_id(row, col).style));
@@ -901,18 +1116,28 @@ pub(crate) fn describe(wb: &Workbook, ops: &[Op], m: &Merged, ctx: &Ctx) -> Info
         }
         if !was.is_empty() {
             let prev = overwritten.get(&(tab, row, col));
-            let author = prev.and_then(|o| unpack_meta(o.prev_meta)).and_then(|(a, at)| wb.authors.get(a).map(|u| (u.to_owned(), at)));
+            let author = prev
+                .and_then(|o| unpack_meta(o.prev_meta))
+                .and_then(|(a, at)| wb.authors.get(a).map(|u| (u.to_owned(), at)));
             candidates.push(Candidate {
                 tab,
                 row,
                 col,
                 address: CellPos::new(r, c).to_string(),
-                before: prev.map(|o| o.prev_value.clone()).unwrap_or_else(|| was.as_value()),
+                before: prev
+                    .map(|o| o.prev_value.clone())
+                    .unwrap_or_else(|| was.as_value()),
                 prev_author: author.as_ref().map(|a| a.0.clone()),
                 prev_at: author.map(|a| a.1),
             });
         }
-        history.push(HistoryRow { tab, row, col, before: was.json(), after: after.json() });
+        history.push(HistoryRow {
+            tab,
+            row,
+            col,
+            before: was.json(),
+            after: after.json(),
+        });
     }
 
     // The tabs it touched.
@@ -920,7 +1145,11 @@ pub(crate) fn describe(wb: &Workbook, ops: &[Op], m: &Merged, ctx: &Ctx) -> Info
     for o in &flat {
         let bulk = matches!(o, Op::ReplaceTab { .. } | Op::RestoreTab { .. });
         if let Some(t) = op_tab(o) {
-            let e = op_tabs.entry(t).or_insert(OpTab { tab: t, bulk: false, area: None });
+            let e = op_tabs.entry(t).or_insert(OpTab {
+                tab: t,
+                bulk: false,
+                area: None,
+            });
             if bulk {
                 e.bulk = true;
                 e.area = None;
@@ -940,11 +1169,20 @@ pub(crate) fn describe(wb: &Workbook, ops: &[Op], m: &Merged, ctx: &Ctx) -> Info
         for (tab, rects) in by_tab {
             let b = bounding(&rects);
             let t = wb.tab(tab).expect("checked");
-            let area = match (t.rows.id_at(b.r1), t.cols.id_at(b.c1), t.rows.id_at(b.r2), t.cols.id_at(b.c2)) {
+            let area = match (
+                t.rows.id_at(b.r1),
+                t.cols.id_at(b.c1),
+                t.rows.id_at(b.r2),
+                t.cols.id_at(b.c2),
+            ) {
                 (Some(a), Some(b2), Some(c), Some(d)) => Some((a, b2, c, d)),
                 _ => None,
             };
-            let e = op_tabs.entry(tab).or_insert(OpTab { tab, bulk: false, area: None });
+            let e = op_tabs.entry(tab).or_insert(OpTab {
+                tab,
+                bulk: false,
+                area: None,
+            });
             if !e.bulk {
                 e.bulk = true;
                 e.area = area;
@@ -953,7 +1191,12 @@ pub(crate) fn describe(wb: &Workbook, ops: &[Op], m: &Merged, ctx: &Ctx) -> Info
     }
 
     // Changes, for viewers and the answer.
-    let reload: BTreeSet<TabId> = m.tabs_reload.iter().chain(m.overflow.iter()).copied().collect();
+    let reload: BTreeSet<TabId> = m
+        .tabs_reload
+        .iter()
+        .chain(m.overflow.iter())
+        .copied()
+        .collect();
     let mut rects: BTreeMap<TabId, Vec<Rect>> = BTreeMap::new();
     for (t, r) in &m.cells {
         rects.entry(*t).or_default().push(*r);
@@ -998,7 +1241,11 @@ pub(crate) fn describe(wb: &Workbook, ops: &[Op], m: &Merged, ctx: &Ctx) -> Info
             }
             used.push(UsedChange::Cells(*t, cells));
         }
-        let shown: Vec<Rect> = if list.len() > MAX_RANGES { vec![bounding(list)] } else { list.clone() };
+        let shown: Vec<Rect> = if list.len() > MAX_RANGES {
+            vec![bounding(list)]
+        } else {
+            list.clone()
+        };
         for r in shown {
             changes.push(json!({"tab": t, "range": r.to_string()}));
         }
@@ -1032,7 +1279,11 @@ pub(crate) fn describe(wb: &Workbook, ops: &[Op], m: &Merged, ctx: &Ctx) -> Info
 
     let event_cells = (!event_too_many).then(|| {
         let (cells, styles, uuids) = view::event_cells(wb, &event_positions);
-        EventCells { cells, styles, uuids }
+        EventCells {
+            cells,
+            styles,
+            uuids,
+        }
     });
 
     // What history says.
@@ -1045,13 +1296,19 @@ pub(crate) fn describe(wb: &Workbook, ops: &[Op], m: &Merged, ctx: &Ctx) -> Info
     let mut cells_by_name: BTreeMap<String, u64> = BTreeMap::new();
     for (t, n) in &per_tab {
         if *n > 0 {
-            *cells_by_name.entry(tab_name(wb, &inv_flat, *t)).or_default() += n;
+            *cells_by_name
+                .entry(tab_name(wb, &inv_flat, *t))
+                .or_default() += n;
         }
     }
     let mut cells_changed: i64 = per_tab.values().sum::<u64>() as i64;
     for o in &flat {
         if let Op::ReplaceTab { content, .. } | Op::RestoreTab { content, .. } = o {
-            let n: i64 = content.columns.iter().map(|c| c.values.iter().filter(|v| !v.is_empty()).count() as i64).sum();
+            let n: i64 = content
+                .columns
+                .iter()
+                .map(|c| c.values.iter().filter(|v| !v.is_empty()).count() as i64)
+                .sum();
             cells_changed += n;
             if let Some(t) = op_tab(o) {
                 *cells_by_name.entry(tab_name(wb, &inv_flat, t)).or_default() += n as u64;
@@ -1059,11 +1316,20 @@ pub(crate) fn describe(wb: &Workbook, ops: &[Op], m: &Merged, ctx: &Ctx) -> Info
         }
     }
     let (summary, facts) = match &ctx.summary {
-        Some(s) => (s.clone(), json!({"cells": {}, "phrases": [safe_text(s)], "given": true})),
+        Some(s) => (
+            s.clone(),
+            json!({"cells": {}, "phrases": [safe_text(s)], "given": true}),
+        ),
         None => {
-            let names: serde_json::Map<String, Value> = cells_by_name.iter().map(|(k, v)| (safe_text(k), json!(v))).collect();
+            let names: serde_json::Map<String, Value> = cells_by_name
+                .iter()
+                .map(|(k, v)| (safe_text(k), json!(v)))
+                .collect();
             let ph: Vec<String> = phrases.iter().map(|p| safe_text(p)).collect();
-            (compose(&cells_by_name, &phrases), json!({"cells": names, "phrases": ph}))
+            (
+                compose(&cells_by_name, &phrases),
+                json!({"cells": names, "phrases": ph}),
+            )
         }
     };
 
@@ -1077,7 +1343,10 @@ pub(crate) fn describe(wb: &Workbook, ops: &[Op], m: &Merged, ctx: &Ctx) -> Info
         tabs_changed.insert(*t);
     }
     tabs_changed.extend(m.overflow.iter().copied());
-    let tabs_changed: Vec<TabId> = tabs_changed.into_iter().filter(|t| wb.tab(*t).is_some()).collect();
+    let tabs_changed: Vec<TabId> = tabs_changed
+        .into_iter()
+        .filter(|t| wb.tab(*t).is_some())
+        .collect();
 
     Info {
         changes,
@@ -1103,7 +1372,9 @@ pub(crate) fn update_used(st: &LineState, changes: &[UsedChange]) {
                 used.remove(t);
             }
             UsedChange::Cells(t, cells) => {
-                let Some(mut cur) = used.get(t).copied() else { continue };
+                let Some(mut cur) = used.get(t).copied() else {
+                    continue;
+                };
                 let mut stale = false;
                 for &(r, c, holds) in cells {
                     if holds {

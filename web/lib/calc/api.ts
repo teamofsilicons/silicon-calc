@@ -3,7 +3,7 @@
  * One function per route the web app uses. A line is the main sheet or one of its copies: every route under
  * `{line}` exists as `/v1/sheets/{sheet}/…` and `/v1/sheets/{sheet}/copies/{copy}/…`.
  */
-import { api, queryString, seg } from "../client/api";
+import { api, queryString, seg, type RequestOptions } from "../client/api";
 import type {
   Account, CellDetail, CellsAnswer, Comment, Copy, CopyCompare, DownloadFormat, Edit, EditAnswer, Folder, FolderPage, MergeAnswer,
   MergeRequest, Meta, PublicAccess, Role, RunAnswer, RunRequest, SearchResult, Sharing, Sheet, SheetList, Tab, TabRef, Thread, Transfer,
@@ -27,22 +27,26 @@ const tabSeg = (tab: TabRef) => seg(String(tab));
 
 export const getMeta = (signal?: AbortSignal) => api.get<Meta>("/v1/meta", { signal });
 export const getMe = (signal?: AbortSignal) => api.get<{ account: Account }>("/v1/me", { signal });
+export const getNotifications = (signal?: AbortSignal) => api.get<{ enabled: boolean }>("/v1/me/notifications", { signal });
+export const enableNotifications = () => api.post<{ enabled: boolean }>("/v1/me/notifications", {});
+export const disableNotifications = () => api.delete<{ enabled: boolean }>("/v1/me/notifications");
 export const lookupAccount = (id: string, signal?: AbortSignal) => api.get<Account>("/v1/accounts/lookup", { query: { id }, signal });
 
 /* ---- sheets and folders ------------------------------------------------------------------------------------------ */
 
-export function listSheets(params: { scope: "mine" | "shared" | "trash"; folder?: string | null; q?: string; cursor?: string | null; limit?: number }, signal?: AbortSignal) {
+export function listSheets(params: { scope: "all" | "mine" | "shared" | "trash"; folder?: string | null; q?: string; cursor?: string | null; limit?: number }, signal?: AbortSignal) {
   return api.get<SheetList>("/v1/sheets", { query: { scope: params.scope, folder: params.folder ?? undefined, q: params.q || undefined, cursor: params.cursor ?? undefined, limit: params.limit }, signal });
 }
 
 export const createSheet = (body: { title?: string; folder_id?: string | null }) => api.post<Sheet>("/v1/sheets", body, { idempotencyKey: true });
 
 /** Opens a file as a new sheet (the file streams as the raw body). */
-export function importSheet(file: File, options: { title?: string; folder_id?: string | null } = {}) {
+export function importSheet(file: File, options: { title?: string; folder_id?: string | null; onUploadProgress?: RequestOptions["onUploadProgress"] } = {}) {
   return api.post<Sheet>(`/v1/sheets/import${queryString({ filename: file.name, title: options.title, folder_id: options.folder_id ?? undefined })}`, undefined, {
     raw: file,
     contentType: file.type || "application/octet-stream",
     idempotencyKey: true,
+    onUploadProgress: options.onUploadProgress,
   });
 }
 
@@ -76,7 +80,7 @@ export const invite = (item: ItemRef, body: { invite: string[]; role: Exclude<Ro
 export const changeRole = (item: ItemRef, account: string, role: Exclude<Role, "owner">) => api.patch<Sharing>(`${itemPath(item)}/sharing/${seg(account)}`, { role });
 export const removeMember = (item: ItemRef, account: string) => api.delete<Sharing>(`${itemPath(item)}/sharing/${seg(account)}`);
 export const removeInvite = (item: ItemRef, email: string) => api.delete<Sharing>(`${itemPath(item)}/invites/${seg(email)}`);
-export const setPublic = (sheet: string, body: { enabled: boolean; access: PublicAccess }) => api.put<{ enabled: boolean; access: PublicAccess; url?: string }>(`/v1/sheets/${seg(sheet)}/public`, body);
+export const setPublic = (sheet: string, body: { enabled?: boolean; access?: PublicAccess; require_email?: boolean }) => api.put<{ enabled: boolean; access: PublicAccess; url?: string }>(`/v1/sheets/${seg(sheet)}/public`, body);
 
 /* ---- cells and edits --------------------------------------------------------------------------------------------- */
 
@@ -87,8 +91,9 @@ export function getCells(line: LineRef, tab: TabRef, range: string | null, optio
   return api.get<CellsAnswer>(`${base}/tabs/${tabSeg(tab)}/cells`, { query: { range: range ?? undefined }, signal: options.signal });
 }
 
-export function getValues(line: LineRef, tab: TabRef, range: string, signal?: AbortSignal) {
-  return api.get<{ version: number; range: string; values: Array<Array<number | string | boolean | null>> }>(`${linePath(line)}/tabs/${tabSeg(tab)}/cells`, { query: { range, format: "values" }, signal });
+export function getValues(line: LineRef, tab: TabRef, range: string, signal?: AbortSignal, version?: number | null) {
+  const base = version !== undefined && version !== null ? `${linePath(line)}/versions/${version}` : linePath(line);
+  return api.get<{ version: number; range: string; values: Array<Array<number | string | boolean | null>> }>(`${base}/tabs/${tabSeg(tab)}/cells`, { query: { range, format: "values" }, signal });
 }
 
 export const getCell = (line: LineRef, tab: TabRef, a1: string, signal?: AbortSignal) => api.get<CellDetail>(`${linePath(line)}/tabs/${tabSeg(tab)}/cells/${seg(a1)}`, { signal });
@@ -103,15 +108,14 @@ export const eventsUrl = (line: LineRef, since: number) => `/api${linePath(line)
 /* ---- code -------------------------------------------------------------------------------------------------------- */
 
 export const runCode = (line: LineRef, body: RunRequest, signal?: AbortSignal) => api.post<RunAnswer>(`${linePath(line)}/run`, body, { signal });
-export const rerunTab = (line: LineRef, tab: TabRef) => api.post<RunAnswer>(`${linePath(line)}/tabs/${tabSeg(tab)}/rerun`);
-export const setKeepUpdated = (line: LineRef, tab: TabRef, keep: boolean) => api.patch<Tab>(`${linePath(line)}/tabs/${tabSeg(tab)}/code`, { keep_updated: keep });
 
 /* ---- files ------------------------------------------------------------------------------------------------------- */
 
-export function importTabs(line: LineRef, file: File, mode: "new_tab" | "replace" = "new_tab", tab?: TabRef) {
+export function importTabs(line: LineRef, file: File, mode: "new_tab" | "replace" = "new_tab", tab?: TabRef, onUploadProgress?: RequestOptions["onUploadProgress"]) {
   return api.post<{ version: number; tabs: Tab[] }>(`${linePath(line)}/tabs/import${queryString({ filename: file.name, mode, tab: tab === undefined ? undefined : String(tab) })}`, undefined, {
     raw: file,
     contentType: file.type || "application/octet-stream",
+    onUploadProgress,
   });
 }
 
@@ -155,3 +159,7 @@ export const resolveThread = (thread: string) => api.post<Thread>(`/v1/comments/
 export const reopenThread = (thread: string) => api.post<Thread>(`/v1/comments/${seg(thread)}/reopen`);
 export const react = (comment: string, emoji: string) => api.post(`/v1/comments/${seg(comment)}/reactions`, { emoji });
 export const unreact = (comment: string, emoji: string) => api.delete(`/v1/comments/${seg(comment)}/reactions/${seg(emoji)}`);
+
+export type FileViewer = { email: string; email_source: "account" | "entered"; first_viewed_at: string; last_viewed_at: string };
+export const getViewers = (sheet: string, offset = 0, signal?: AbortSignal) => api.get<{ viewers: FileViewer[]; total: number; next_offset: number | null }>(`/v1/sheets/${seg(sheet)}/viewers?offset=${offset}`, { signal });
+export const recordVisit = (sheet: string, email: string) => api.post<{ ok: boolean }>(`/v1/sheets/${seg(sheet)}/visits`, { email });

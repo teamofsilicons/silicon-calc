@@ -19,6 +19,7 @@ pub enum ErrorKind {
     Calc = 9,
     /// A circular reference. Excel shows 0 with a warning; Calc shows the error so the cycle is visible.
     Circ = 10,
+    Busy = 11,
 }
 
 impl ErrorKind {
@@ -34,6 +35,7 @@ impl ErrorKind {
             Self::Spill => "#SPILL!",
             Self::Calc => "#CALC!",
             Self::Circ => "#CIRC!",
+            Self::Busy => "#BUSY!",
         }
     }
 
@@ -49,6 +51,7 @@ impl ErrorKind {
             "#SPILL!" => Self::Spill,
             "#CALC!" => Self::Calc,
             "#CIRC!" => Self::Circ,
+            "#BUSY!" => Self::Busy,
             _ => return None,
         })
     }
@@ -64,6 +67,7 @@ impl ErrorKind {
             7 => Self::NA,
             8 => Self::Spill,
             9 => Self::Calc,
+            11 => Self::Busy,
             _ => Self::Circ,
         }
     }
@@ -81,6 +85,7 @@ impl ErrorKind {
             Self::Spill => 9.0,
             Self::Calc => 14.0,
             Self::Circ => 3.0,
+            Self::Busy => 8.0,
         }
     }
 }

@@ -71,6 +71,12 @@
 .pillMain { --sq-fill: var(--primary); color: var(--primary-foreground); }
 .pillMain:hover, .pillMain:focus-visible { --sq-fill: var(--primary-hover); color: var(--primary-foreground); }
 
+/* Keep the wordmark and both links visible with Paper Mono on narrow phones. */
+@media (max-width: 380px) {
+  .bar { gap: 8px; }
+  .pillLink { padding-inline: 4px; }
+}
+
 /* Footer ----------------------------------------------------------------------------------------------------------- */
 .footer { border-top: 1px solid var(--border-subtle); background: var(--background); }
 .footerInner {

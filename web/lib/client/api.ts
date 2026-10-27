@@ -12,6 +12,7 @@
  */
 import { ApiError, errorFromResponse, networkError } from "../errors";
 import { ensureFreshSession, markSignedOut } from "./session";
+import { uploadRequest, type UploadProgress } from "./upload";
 
 export type QueryValue = string | number | boolean | null | undefined | readonly (string | number)[];
 
@@ -27,6 +28,8 @@ export interface RequestOptions {
   /** Sends `Idempotency-Key`: `true` makes a fresh key; pass your own to make retries of one action safe. */
   idempotencyKey?: string | true;
   signal?: AbortSignal;
+  /** Byte progress for a raw Blob upload, including completion of the upload before processing. */
+  onUploadProgress?: (progress: UploadProgress) => void;
 }
 
 /** A fresh Idempotency-Key. Keep it for the retries of one logical action. */
@@ -81,7 +84,10 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   await ensureFreshSession();
   let response: Response;
   try {
-    response = await fetch(`/api${path}${queryString(options.query)}`, { method, headers, body, credentials: "same-origin", cache: "no-store", signal: options.signal });
+    const url = `/api${path}${queryString(options.query)}`;
+    response = options.onUploadProgress && body instanceof Blob
+      ? await uploadRequest(url, body, { method, headers, signal: options.signal, onProgress: options.onUploadProgress })
+      : await fetch(url, { method, headers, body, credentials: "same-origin", cache: "no-store", signal: options.signal });
   } catch (error) {
     throw networkError(error, method, path, "this site");
   }

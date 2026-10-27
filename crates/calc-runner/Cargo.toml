@@ -1,6 +1,6 @@
 [package]
 name = "calc-runner"
-description = "Runs SQL (DuckDB), Python and JavaScript against a sheet's tabs, sandboxed, and converts Parquet, Numbers and .xls files"
+description = "Trusted spreadsheet file converters for Parquet, LibreOffice formats and Apple Numbers"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -14,8 +14,8 @@ thiserror.workspace = true
 tracing.workspace = true
 rand.workspace = true
 libc.workspace = true
-# DuckDB runs SQL in-process; parquet reads and writes Parquet, json gives SQL its JSON functions, appender-arrow
-# loads a tab into a table column by column.
+# DuckDB reads and writes Parquet in-process; appender-arrow loads workbook columns.
+# Existing features are retained to avoid a second bundled DuckDB build.
 duckdb = { workspace = true, features = ["parquet", "json", "appender-arrow"] }
 
 [dev-dependencies]

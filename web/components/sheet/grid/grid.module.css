@@ -79,11 +79,11 @@
   pointer-events: none;
   background: #FFFFFF;
   color: var(--foreground);
-  box-shadow: 0 0 0 2px var(--accent), 0 4px 14px rgb(16 24 40 / .12);
+  box-shadow: 0 0 0 2px var(--accent), 0 4px 14px rgb(0 0 0 / .12);
 }
 
-.mirror [data-kind="string"] { color: #18703F; }
-.mirror [data-kind="func"] { color: #292929; }
+.mirror [data-kind="string"] { color: var(--syntax-string); }
+.mirror [data-kind="func"] { color: var(--foreground); }
 
 /* Function suggestions and the signature hint, under the editor. */
 .suggestions,
@@ -203,3 +203,57 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+.cellControl {
+  position: absolute;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  overflow: hidden;
+}
+.cellCheckbox, .cellDropdown {
+  --sq-r: 3px;
+  --sq-fill: var(--background);
+  --sq-stroke: var(--border-strong);
+  pointer-events: auto;
+  background: var(--sq-fill);
+  color: var(--foreground);
+  border: 1px solid var(--sq-stroke);
+  outline: none;
+  cursor: pointer;
+}
+.cellCheckbox {
+  width: 17px;
+  height: 17px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  flex-shrink: 0;
+}
+.cellCheckbox[aria-checked="true"] {
+  --sq-fill: var(--foreground);
+  --sq-stroke: var(--foreground);
+  color: var(--background);
+}
+.cellCheckbox:focus-visible, .cellDropdown:focus-visible {
+  --sq-stroke: var(--foreground);
+  box-shadow: inset 0 0 0 1px var(--foreground);
+}
+.cellCheckbox:disabled, .cellDropdown:disabled { cursor: default; opacity: .7; }
+.cellDropdown {
+  width: calc(100% - 8px);
+  height: calc(100% - 2px);
+  padding: 0 4px;
+  font: inherit;
+  font-size: 12px;
+  --sq-fill: var(--surface-muted);
+}
+
+.cellRating { display:flex; gap:1px; align-items:center; justify-content:center; width:100%; }
+.cellRating button { pointer-events:auto; display:flex; padding:1px; border:0; background:transparent; color:var(--foreground); cursor:pointer; }
+.cellRating button:disabled { cursor:default; }
+.cellRating button:focus-visible { background:var(--surface-muted); }
+.cellChip { pointer-events:auto; --sq-r:7px; --sq-fill:var(--surface-muted); display:flex; gap:5px; align-items:center; min-width:0; max-width:calc(100% - 8px); padding:2px 6px; font-size:12px; }
+.cellChip span, .cellChip a { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; color:inherit; text-decoration:none; }

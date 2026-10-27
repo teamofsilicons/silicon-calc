@@ -520,10 +520,41 @@ pub(super) fn read(r: &mut dyn BufRead, sheet: usize, ctx: &Ctx<'_>, warnings: &
                 }
             }
             b"dataValidation" => {
-                warnings.count("validation", String::new);
+                let kind = attr(e, b"type").unwrap_or_default();
+                let ranges = attr(e, b"sqref").unwrap_or_default();
+                let mut formula = String::new();
                 if !empty {
-                    skip_element(&mut xr, &mut b2);
+                    loop {
+                        b2.clear();
+                        match xr.read_event_into(&mut b2) {
+                            Ok(Event::Start(ref e)) if name_of(e) == b"formula1" => read_into(&mut xr, &mut b3, &mut formula),
+                            Ok(Event::End(ref e)) if local(e.name().into_inner()) == b"dataValidation" => break,
+                            Ok(Event::Eof) | Err(_) => break,
+                            _ => {}
+                        }
+                    }
                 }
+                let options = formula.strip_prefix('"').and_then(|s| s.strip_suffix('"'))
+                    .map(|s| s.split(',').map(str::to_owned).collect::<Vec<_>>());
+                if kind == "list" && let Some(options) = options {
+                    let control = crate::style::CellControl::Dropdown { options };
+                    if control.validate().is_ok() {
+                        let mut budget = 200_000u64;
+                        for area in ranges.split_whitespace().filter_map(|s| Rect::parse(s, MAX_ROWS, MAX_COLS)) {
+                            if area.rows() as u64 * area.cols() as u64 > budget { warnings.count("validation", String::new); continue; }
+                            budget -= area.rows() as u64 * area.cols() as u64;
+                            for r in area.r1..=area.r2 { for c in area.c1..=area.c2 {
+                                let old = b.columns.get(c as usize).and_then(|col| col.styles.iter().find(|s| s.0 == r)).and_then(|s| b.styles.get(s.1 as usize)).cloned().unwrap_or_default();
+                                let style = Style { control: Some(control.clone()), ..old };
+                                let ix = b.style_id(&style).expect("control has style");
+                                b.column(c).styles.retain(|s| s.0 != r);
+                                b.style(r, c, Some(ix));
+                            } }
+                        }
+                        continue;
+                    }
+                }
+                warnings.count("validation", String::new);
             }
             b"autoFilter" => {
                 warnings.count("filter", String::new);
@@ -536,6 +567,7 @@ pub(super) fn read(r: &mut dyn BufRead, sheet: usize, ctx: &Ctx<'_>, warnings: &
         }
     }
 
+    for col in &mut b.columns { col.styles.sort_unstable_by_key(|s| s.0); }
     // Shared formulas whose master came after them.
     for (r, c, si) in pending {
         match masters.get(&si).map(|m| m.expr.clone()) {

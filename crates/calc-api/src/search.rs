@@ -8,7 +8,7 @@
 
 use std::{collections::HashSet, sync::Arc};
 
-use axum::{Json, Router, extract::State, routing::get};
+use axum::{Json, Router, extract::State, routing::get, http::HeaderMap};
 use calc_engine::{CellPos, Value as CellValue, Workbook};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -89,7 +89,7 @@ struct SearchQuery {
     limit: Option<i64>,
 }
 
-async fn search(State(state): State<AppState>, caller: Caller, QueryParams(q): QueryParams<SearchQuery>) -> ApiResult<Json<Value>> {
+async fn search(State(state): State<AppState>, caller: Caller, headers: HeaderMap, QueryParams(q): QueryParams<SearchQuery>) -> ApiResult<Json<Value>> {
     let Some(text) = q.q.as_deref().map(str::trim).filter(|t| !t.is_empty()) else {
         return Err(ApiError::invalid_field("q", "Give something to search for, like ?q=revenue."));
     };
@@ -134,6 +134,11 @@ async fn search(State(state): State<AppState>, caller: Caller, QueryParams(q): Q
     let lower = text.to_lowercase();
     let mut chosen: Vec<(SheetRow, Vec<Value>)> = Vec::new();
     for sheet in candidates {
+        match crate::visitors::ensure(&state, Some(&caller), &sheet, &headers, false).await {
+            Ok(()) => {},
+            Err(error) if error.code == "email_required" => continue,
+            Err(error) => return Err(error),
+        }
         let matches: Vec<Value> = lines.iter().filter(|(id, _)| *id == sheet.id).map(|(_, line)| match_json(line)).collect();
         let title_hit = sheet.title.to_lowercase().contains(&lower);
         if !title_hit && matches.is_empty() {

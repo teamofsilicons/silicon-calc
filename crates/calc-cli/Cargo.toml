@@ -27,7 +27,6 @@ unicode-width = "0.2"
 rpassword = "7"
 
 [dev-dependencies]
-calc-api = { path = "../calc-api" }
 axum.workspace = true
 base64.workspace = true
 ed25519-dalek = "2"

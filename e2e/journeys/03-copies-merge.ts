@@ -5,11 +5,11 @@
 // is deleted and stays readable in the history.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { type Copy, type Sheet, CalcApi, at, plain } from '../lib/calc.ts';
-import { SALES_FILE, revenueOf } from '../lib/fixtures.ts';
+import { revenueOf } from '../lib/fixtures.ts';
 import { journey } from '../lib/journey.ts';
-import { viaCli } from '../lib/steps.ts';
+import { salesSheet } from '../lib/sheets.ts';
+import { needs, viaCli } from '../lib/steps.ts';
 import { type CarbonPerson, type SiliconPerson, world } from '../lib/world.ts';
 
 async function copies(api: CalcApi, sheet: string, status = 'all'): Promise<Copy[]> {
@@ -33,14 +33,19 @@ export default journey('A Silicon tries ideas in copies; a Carbon compares and m
   let cliSignedIn = false;
   const copyName = 'Try a March fix';
 
-  j.step('a Carbon who owns the sheet, a second Carbon and a Silicon, both editors', async () => {
+  j.step('a Carbon who owns the sheet, a second Carbon and a Silicon', async () => {
     ada = await w.carbon('Ada');
     grace = await w.carbon('Grace');
     si = await w.silicon(ada, 'Analyst');
+  });
+
+  salesSheet(j, 'the Carbon', () => ada.api, 'Sales 2026', (o) => {
+    sheet = o.sheet;
+    tab = o.tab;
+  });
+
+  j.step('the Carbon invites the second Carbon and the Silicon as editors', async () => {
     since = await w.ting.seq();
-    sheet = await ada.api.post<Sheet>('/v1/sheets/import', { query: { filename: 'sales-2026.csv', title: 'Sales 2026' }, body: readFileSync(SALES_FILE), contentType: 'text/csv' }, 201);
-    const t = (await ada.api.get<Sheet>(`/v1/sheets/${sheet.id}`)).tabs![0]!;
-    tab = { id: t.id, name: t.name };
     const sharing = await ada.api.post(`/v1/sheets/${sheet.id}/sharing`, { json: { invite: [grace.id, si.id], role: 'editor', notify: true } });
     for (const p of [grace, si]) assert.equal(sharing.members.find((m: any) => m.account.uuid === p.uuid)?.role, 'editor', `${p.id} is an editor`);
   });
@@ -178,11 +183,29 @@ export default journey('A Silicon tries ideas in copies; a Carbon compares and m
   });
 
   j.check('the Silicon lists and compares copies with the CLI (calc copies ls, calc copies compare)', async () => {
-    if (!cliSignedIn) throw new Error('the CLI is not signed in');
+    needs(cliSignedIn, 'the CLI is not signed in (see the login check)');
     const ls = await si.cli.json(['copies', 'ls', sheet.id]);
-    assert.ok(JSON.stringify(ls).includes(copy.id));
+    assert.ok(JSON.stringify(ls).includes(copy.id), 'calc copies ls lists the copy');
+    const all = await si.cli.json(['copies', 'ls', sheet.id, '--all']);
+    assert.ok(JSON.stringify(all).includes(nested.id), 'calc copies ls --all lists the deleted copy too');
     const cmp = await si.cli.json(['copies', 'compare', sheet.id, copy.id]);
-    assert.ok(JSON.stringify(cmp).includes('E8'));
+    const pending = (cmp.diff?.cells ?? []).map((c: any) => c.address);
+    assert.ok(pending.includes('G1'), 'calc copies compare shows the newly merged nested-copy change G1');
+    assert.ok(!pending.includes('E8'), 'already accepted E8 is no longer pending in the open copy');
+  });
+
+  j.check('the Silicon makes another copy with the CLI, changes it and merges it back (calc copies new, write, merge)', async () => {
+    needs(cliSignedIn, 'the CLI is not signed in (see the login check)');
+    const made = await si.cli.json(['copies', 'new', sheet.id, 'Add a check column']);
+    const id = made.id ?? made.copy?.id;
+    assert.ok(id, `calc copies new answered ${JSON.stringify(made).slice(0, 200)}`);
+    await si.cli.json(['write', sheet.id, 'H1', 'checked', '--tab', tab.name, '--copy', id]);
+    const dry = await si.cli.json(['copies', 'merge', sheet.id, id, '--dry-run']);
+    assert.equal(await value(ada.api, sheet.id, tab.id, 'H1'), null, `a dry run changes nothing (${JSON.stringify(dry).slice(0, 200)})`);
+    await si.cli.json(['copies', 'merge', sheet.id, id, '--close']);
+    assert.equal(await value(ada.api, sheet.id, tab.id, 'H1'), 'checked', 'the merge brought H1 into the sheet');
+    const after = (await copies(ada.api, sheet.id)).find((c) => c.id === id);
+    assert.notEqual(after?.status, 'open', 'merged with --close, the copy is no longer open');
   });
 
   j.check('a viewer can\'t make copies', async () => {

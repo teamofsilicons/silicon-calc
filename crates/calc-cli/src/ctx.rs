@@ -15,8 +15,6 @@ use crate::session::{Session, SessionProvider, Store};
 pub const DEFAULT_API_URL: &str = "https://calc-api.teamofsilicons.com";
 pub const DEFAULT_ACCOUNTS_URL: &str = "https://accounts.teamofsilicons.com";
 pub const WEB_URL: &str = "https://calc.teamofsilicons.com";
-pub const REPOSITORY_URL: &str = "https://github.com/teamofsilicons/silicon-calc";
-pub const DOCS_URL: &str = "https://github.com/teamofsilicons/silicon-calc/blob/main/docs/CLI.md";
 
 pub struct Options {
     pub json: bool,

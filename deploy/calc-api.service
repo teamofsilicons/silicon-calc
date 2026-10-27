@@ -1,0 +1,42 @@
+[Unit]
+Description=Silicon Calc service
+After=network-online.target postgresql.service apparmor.service
+Wants=network-online.target apparmor.service
+StartLimitIntervalSec=180
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=calc
+Group=calc
+EnvironmentFile=/etc/silicon-calc/api.env
+WorkingDirectory=/var/lib/silicon-calc
+ExecStartPre=/opt/silicon-calc/current/bin/calc-preflight
+ExecStart=/opt/silicon-calc/current/bin/calc-api
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=180
+TimeoutStopSec=180
+KillSignal=SIGTERM
+StateDirectory=silicon-calc
+StateDirectoryMode=0700
+UMask=0077
+AppArmorProfile=silicon-calc-converters
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# Outer ProtectKernelTunables masks /proc and prevents bubblewrap's private proc
+# mount. The enforcing Calc AppArmor profile denies /proc/sys and /sys writes.
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=/var/lib/silicon-calc
+LimitNOFILE=65536
+TasksMax=512
+MemoryHigh=3G
+MemoryMax=4G
+# Bubblewrap must be able to create unprivileged namespaces. Do not add RestrictNamespaces.
+
+[Install]
+WantedBy=multi-user.target

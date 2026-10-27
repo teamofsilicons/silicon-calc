@@ -19,13 +19,14 @@ async fn meta_me_and_account_lookups() {
     let meta = h.get_anon("/v1/meta").await;
     let meta = expect(&meta, 200);
     assert_eq!(meta["app_id"], json!("calc"));
-    assert_eq!(meta["version"], json!("0.1.0"));
+    assert_eq!(meta["version"], json!(env!("CARGO_PKG_VERSION")));
     assert_eq!(meta["accounts_url"], json!(h.accounts.url));
     assert_eq!(meta["limits"]["max_rows"], json!(10_485_760));
     assert_eq!(meta["limits"]["max_cols"], json!(16_384));
     assert_eq!(meta["limits"]["max_upload_bytes"], json!(524_288_000));
     assert_eq!(meta["limits"]["max_cells_per_edit"], json!(200_000));
-    assert_eq!(meta["limits"]["code_timeout_seconds"], json!(60));
+    assert_eq!(meta["limits"]["browser_command_timeout_seconds"], json!(60));
+    assert_eq!(meta["limits"]["conversion_timeout_seconds"], json!(60));
 
     let me = h.get(&ada, "/v1/me").await;
     let me = expect(&me, 200);
@@ -70,7 +71,7 @@ async fn creating_and_reading_a_sheet() {
     assert_eq!(s["created_by"]["id"], json!("c:ada"));
     assert_eq!(s["updated_by"]["id"], json!("c:ada"));
     assert_eq!(s["folder_id"], json!(null));
-    assert_eq!(s["public"], json!({"enabled": false, "access": "view"}));
+    assert_eq!(s["public"], json!({"enabled": false, "access": "view", "require_email": false}));
     assert_eq!(s["version"], json!(0));
     assert_eq!(s["copies"], json!(0));
     assert_eq!(s["trashed_at"], json!(null));
@@ -207,6 +208,84 @@ async fn listing_mine_shared_trash_and_pages() {
     assert_eq!(ids(&expect(&page2, 200)["sheets"]), vec![made[1].clone()]);
     let bobs_trash = h.get(&bob, "/v1/sheets?scope=trash").await;
     assert_eq!(ids(&expect(&bobs_trash, 200)["sheets"]), Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn combined_home_keeps_owned_shared_search_paging_and_access_boundaries() {
+    let h = support::Harness::start().await;
+    let ada = h.carbon("c:ada", "Ada");
+    let bob = h.carbon("c:bob", "Bob");
+    let owned = new_sheet_id(&h, &ada, "Budget owned", None).await;
+    let shared = new_sheet_id(&h, &bob, "Budget shared", None).await;
+    let newest_owned = new_sheet_id(&h, &ada, "Budget newest owned", None).await;
+    let private = new_sheet_id(&h, &bob, "Budget private", None).await;
+    let public = new_sheet_id(&h, &bob, "Budget public link", None).await;
+    expect(&h.put(&bob, &format!("/v1/sheets/{public}/public"), json!({"enabled": true, "access": "view"})).await, 200);
+    share(&h, &bob, &format!("sheets/{shared}"), &["c:ada"], "commenter").await;
+
+    let own_folder = new_folder(&h, &ada, "Budget own folder", None).await;
+    let own_child = new_sheet_id(&h, &ada, "Budget own child", Some(&own_folder)).await;
+    let shared_folder = new_folder(&h, &bob, "Budget shared folder", None).await;
+    let nested = new_folder(&h, &bob, "Budget nested", Some(&shared_folder)).await;
+    let shared_child = new_sheet_id(&h, &bob, "Budget shared child", Some(&nested)).await;
+    share(&h, &bob, &format!("folders/{shared_folder}"), &["c:ada"], "viewer").await;
+    share(&h, &bob, &format!("sheets/{shared_child}"), &["c:ada"], "editor").await;
+
+    let home = h.get(&ada, "/v1/sheets?scope=all").await;
+    let home = expect(&home, 200);
+    let home_ids = ids(&home["sheets"]);
+    let mut expected = vec![owned.clone(), shared.clone(), newest_owned.clone(), shared_child.clone()];
+    expected.sort();
+    let mut sorted = home_ids.clone();
+    sorted.sort();
+    assert_eq!(sorted, expected, "owned roots and directly shared sheets, with no private/public-link discovery");
+    assert_eq!(ids(&home["folders"]), vec![own_folder.clone(), shared_folder.clone()]);
+    let rows = home["sheets"].as_array().unwrap();
+    assert!(rows.windows(2).all(|pair| (pair[0]["updated_at"].as_str(), pair[0]["id"].as_str()) >= (pair[1]["updated_at"].as_str(), pair[1]["id"].as_str())));
+    assert_eq!(rows.iter().find(|s| s["id"] == shared).unwrap()["role"], "commenter");
+    assert_eq!(rows.iter().find(|s| s["id"] == shared_child).unwrap()["role"], "editor");
+    assert_eq!(rows.iter().find(|s| s["id"] == owned).unwrap()["role"], "owner");
+
+    let mut paged = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..4 {
+        let path = format!("/v1/sheets?scope=all&limit=2{}", cursor.as_ref().map(|c| format!("&cursor={c}")).unwrap_or_default());
+        let page = h.get(&ada, &path).await;
+        let page = expect(&page, 200);
+        paged.extend(ids(&page["sheets"]));
+        if cursor.is_some() { assert_eq!(page["folders"], json!([])); }
+        cursor = page["next_cursor"].as_str().map(str::to_owned);
+        if cursor.is_none() { break; }
+    }
+    assert_eq!(paged, home_ids, "pagination must sort both sources together without losing or repeating sheets");
+    let mine = h.get(&ada, "/v1/sheets?scope=mine").await;
+    let mine = ids(&expect(&mine, 200)["sheets"]);
+    assert!(mine.contains(&owned) && mine.contains(&newest_owned) && mine.len() == 2);
+    let shared_only = h.get(&ada, "/v1/sheets?scope=shared").await;
+    let shared_only = ids(&expect(&shared_only, 200)["sheets"]);
+    assert!(shared_only.contains(&shared) && shared_only.contains(&shared_child) && shared_only.len() == 2);
+
+    let found = h.get(&ada, "/v1/sheets?scope=all&q=budget").await;
+    let found = expect(&found, 200);
+    let mut found_ids = ids(&found["sheets"]);
+    found_ids.sort();
+    expected.push(own_child.clone());
+    expected.sort();
+    assert_eq!(found_ids, expected, "search finds folder contents, deduplicating direct and inherited access");
+    assert!(ids(&found["folders"]).contains(&nested));
+    expect_error(&h.delete(&ada, &format!("/v1/sheets/{shared}")).await, 403, "not_allowed");
+    expect_error(&h.get(&ada, &format!("/v1/sheets/{private}")).await, 404, "not_found");
+
+    expect(&h.delete(&bob, &format!("/v1/sheets/{shared}/sharing/{}", ada.uuid)).await, 204);
+    expect(&h.delete(&bob, &format!("/v1/folders/{shared_folder}")).await, 204);
+    expect(&h.delete(&ada, &format!("/v1/folders/{own_folder}")).await, 204);
+    expect(&h.delete(&ada, &format!("/v1/sheets/{owned}")).await, 204);
+    for path in ["/v1/sheets?scope=all", "/v1/sheets?scope=all&q=budget"] {
+        let remaining = h.get(&ada, path).await;
+        let remaining = expect(&remaining, 200);
+        assert_eq!(ids(&remaining["sheets"]), vec![newest_owned.clone()], "revoked and trashed ancestors disappear immediately");
+        assert_eq!(remaining["folders"], json!([]));
+    }
 }
 
 #[tokio::test]

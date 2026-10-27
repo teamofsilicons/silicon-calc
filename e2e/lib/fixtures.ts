@@ -6,6 +6,7 @@
 // - million(): a 1,000,000-row CSV made on first use in .dev/e2e/fixtures (deterministic), with its count and sums.
 
 import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { once } from 'node:events';
 import { join } from 'node:path';
 import { E2E_DIR } from './stack.ts';
 
@@ -94,12 +95,10 @@ export async function million(dir: string, rows = 1_000_000): Promise<Million> {
   let bytes = 0;
   const tmp = `${file}.tmp`;
   const out = createWriteStream(tmp);
-  const write = (s: string) =>
-    new Promise<void>((resolve, reject) => {
-      bytes += Buffer.byteLength(s);
-      if (out.write(s)) resolve();
-      else out.once('drain', resolve).once('error', reject);
-    });
+  const write = async (s: string) => {
+    bytes += Buffer.byteLength(s);
+    if (!out.write(s)) await once(out, 'drain');
+  };
   await write('id,day,region,amount\n');
   let chunk: string[] = [];
   for (let id = 1; id <= rows; id++) {

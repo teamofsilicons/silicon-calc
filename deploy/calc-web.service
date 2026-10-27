@@ -1,0 +1,43 @@
+[Unit]
+Description=Silicon Calc web app
+After=network-online.target calc-api.service
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=calc-web
+Group=calc-web
+EnvironmentFile=/etc/silicon-calc/web.env
+Environment=NODE_ENV=production HOSTNAME=127.0.0.1 PORT=8731
+Environment=NEXT_TELEMETRY_DISABLED=1
+WorkingDirectory=/opt/silicon-calc/current/web
+ExecStart=/opt/node/bin/node /opt/silicon-calc/current/web/server.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=60
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CacheDirectory=silicon-calc-web
+CacheDirectoryMode=0700
+ReadWritePaths=/var/cache/silicon-calc-web
+LimitNOFILE=65536
+TasksMax=256
+MemoryHigh=768M
+MemoryMax=1536M
+
+[Install]
+WantedBy=multi-user.target

@@ -1,7 +1,5 @@
-// Size: a sheet holds a million rows and stays quick. A Carbon opens a 1,000,000-row CSV; its last rows read back
-// exactly; a Silicon asks questions of all of it with SQL (count, sums, groups, a new tab), with Python and with the
-// calc command line; a formula sums the million rows; the rows sort. Every answer is checked against the file's
-// own totals, and every step says how long it took.
+// Size: import a million rows, verify the first and last rows, read them through the CLI,
+// calculate over the complete range and sort it. JavaScript execution is exercised in the browser suite.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -9,7 +7,6 @@ import { join } from 'node:path';
 import { type Sheet, type Tab, at, plain } from '../lib/calc.ts';
 import { type Million, million } from '../lib/fixtures.ts';
 import { journey, seconds } from '../lib/journey.ts';
-import { num } from '../lib/steps.ts';
 import { type CarbonPerson, type SiliconPerson, world } from '../lib/world.ts';
 
 const ROWS = Number(process.env.E2E_MILLION_ROWS ?? 1_000_000);
@@ -22,7 +19,6 @@ export default journey(`A ${ROWS.toLocaleString('en-US')}-row CSV is imported an
   let m: Million;
   let sheet: Sheet;
   let tab: Tab;
-  const quoted = () => `"${tab.name.replace(/"/g, '""')}"`;
   const last = ROWS + 1;
 
   j.step(`the ${ROWS.toLocaleString('en-US')}-row CSV is ready, with its totals`, async () => {
@@ -60,55 +56,12 @@ export default journey(`A ${ROWS.toLocaleString('en-US')}-row CSV is imported an
     assert.ok(ms < 5000, `reading the first screen took ${seconds(ms)}`);
   });
 
-  j.step('SQL counts and sums the million rows', async () => {
-    const t0 = performance.now();
-    const r = await si.api.post(`/v1/sheets/${sheet.id}/run`, { json: { language: 'sql', code: `select count(*) as n, sum(amount) as total from ${quoted()}`, into: null }, timeoutMs: LONG });
-    j.note(`first query in ${seconds(performance.now() - t0)} (service says ${r.duration_ms} ms)`);
-    assert.deepEqual(r.columns, ['n', 'total']);
-    assert.equal(num(r.rows[0][0]), ROWS);
-    assert.equal(num(r.rows[0][1]), m.total);
-  }, { timeoutMs: LONG });
-
-  j.step('SQL groups the million rows by region', async () => {
-    const t0 = performance.now();
-    const r = await si.api.post(`/v1/sheets/${sheet.id}/run`, { json: { language: 'sql', code: `select region, count(*) as n, sum(amount) as total from ${quoted()} group by region order by region` }, timeoutMs: LONG });
-    j.note(`second query in ${seconds(performance.now() - t0)} (service says ${r.duration_ms} ms; the tab's table is cached)`);
-    const got = Object.fromEntries(r.rows.map((x: unknown[]) => [x[0], [num(x[1]), num(x[2])]]));
-    for (const region of Object.keys(m.byRegion)) assert.deepEqual(got[region], [m.countByRegion[region], m.byRegion[region]], region);
-  }, { timeoutMs: LONG });
-
-  j.check('SQL writes its answer into a new tab', async () => {
-    const r = await si.api.post(`/v1/sheets/${sheet.id}/run`, { json: { language: 'sql', code: `select region, sum(amount) as total from ${quoted()} group by region order by total desc`, into: { new_tab: 'By region' } }, timeoutMs: LONG });
-    assert.equal(r.tab?.name, 'By region');
-    const values = await ada.api.values(sheet.id, r.tab.id, 'A1:B5');
-    assert.equal(values.length, 5);
-    assert.equal(num(values[1]![1]), Math.max(...Object.values(m.byRegion)));
-  }, { timeoutMs: LONG });
-
-  j.check('the Silicon asks the million rows with the CLI (calc run sql)', async () => {
-    await si.cli.loginSilicon(si.id, si.stk);
-    const t0 = performance.now();
-    const out = await si.cli.json(['run', 'sql', sheet.id, '-c', `select max(amount) as top, count(distinct region) as regions from ${quoted()}`], { timeoutMs: LONG });
-    j.note(`calc run sql in ${seconds(performance.now() - t0)}`);
-    const rows = out.rows ?? out.result?.rows;
-    assert.equal(num(rows[0][0]), m.maxAmount);
-    assert.equal(num(rows[0][1]), 4);
-  }, { timeoutMs: LONG });
-
   j.check('the Silicon reads the end of the tab with the CLI (calc read)', async () => {
+    await si.cli.loginSilicon(si.id, si.stk);
     const t0 = performance.now();
     const csv = await si.cli.text(['read', sheet.id, `A${last - 2}:D${last}`, '--format', 'csv'], { timeoutMs: LONG });
     j.note(`calc read in ${seconds(performance.now() - t0)}`);
     assert.deepEqual(csv.trim().split(/\r?\n/), m.tail.slice(-3).map((r) => r.join(',')));
-  }, { timeoutMs: LONG });
-
-  j.check('Python reads the million rows as a DataFrame', async () => {
-    const t0 = performance.now();
-    const code = `df = calc.tab(${JSON.stringify(tab.name)})\nresult = [[len(df), int(df["amount"].sum())]]`;
-    const r = await si.api.post(`/v1/sheets/${sheet.id}/run`, { json: { language: 'python', code }, timeoutMs: LONG });
-    j.note(`Python in ${seconds(performance.now() - t0)}`);
-    assert.equal(num(r.rows[0][0]), ROWS);
-    assert.equal(num(r.rows[0][1]), m.total);
   }, { timeoutMs: LONG });
 
   j.check('a formula sums the million rows', async () => {

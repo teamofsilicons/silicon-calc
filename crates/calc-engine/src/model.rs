@@ -5,13 +5,12 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use ahash::{HashMap, HashMapExt as _, HashSet};
+use ahash::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     addr::{CellPos, MAX_COLS, MAX_ROWS, Rect},
     formula::ast::TabId,
-    style::Styles,
     value::{ErrorKind, Value},
 };
 
@@ -60,6 +59,14 @@ pub struct Axis {
 }
 
 impl Axis {
+    pub(crate) fn remapped(&self, ids: &std::collections::BTreeMap<u32, u32>) -> Self {
+        let order: Vec<_> = self.order.iter().map(|id| ids.get(id).copied().unwrap_or(*id)).collect();
+        let next = ids.values().chain(order.iter()).copied().max().map_or(self.next, |id| self.next.max(id + 1));
+        let mut axis = Self { order, next, pos_of: Vec::new() };
+        axis.rebuild();
+        axis
+    }
+
     pub fn rebuild(&mut self) {
         self.pos_of = vec![NONE; self.next as usize];
         for (p, &id) in self.order.iter().enumerate() {
@@ -263,7 +270,7 @@ pub struct Cell {
 /// The code a tab was made by.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CodeSource {
-    /// `sql`, `python` or `javascript`.
+    /// `javascript` for browser commands; historical snapshots may retain a previous language label.
     pub language: String,
     pub code: String,
     /// The tabs it reads, by id.
@@ -341,6 +348,8 @@ pub struct Tab {
     pub code: Option<CodeSource>,
     #[serde(default)]
     pub color: Option<String>,
+    #[serde(default)]
+    pub format_rules: Vec<crate::conditional::Rule>,
 }
 
 impl Tab {
@@ -361,6 +370,7 @@ impl Tab {
             merges: Vec::new(),
             code: None,
             color: None,
+            format_rules: Vec::new(),
         }
     }
 
@@ -693,10 +703,6 @@ impl crate::formula::parse::TabNames for WorkbookNames<'_> {
     fn tab_name(&self, id: TabId) -> Option<String> {
         self.0.iter().find(|t| t.id == id).map(|t| t.name.clone())
     }
-}
-
-pub(crate) fn hidden_set(v: &[u32]) -> HashSet<u32> {
-    v.iter().copied().collect()
 }
 
 impl Default for Tab {

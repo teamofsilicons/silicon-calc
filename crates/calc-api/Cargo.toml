@@ -13,8 +13,13 @@ path = "src/lib.rs"
 name = "calc-api"
 path = "src/main.rs"
 
+[[bin]]
+name = "calc-preflight"
+path = "src/bin/preflight.rs"
+
 [dependencies]
 calc-engine.workspace = true
+calc-runner.workspace = true
 calc-ting.workspace = true
 silicon-accounts-client.workspace = true
 axum.workspace = true

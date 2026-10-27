@@ -246,9 +246,21 @@ pub(crate) fn reference(inner: &str) -> Result<String, Problem> {
 
 /// A cell range address of a named range (`$Sheet1.$A$1:.$B$9`, no brackets) as Excel text.
 pub(crate) fn range_address(address: &str) -> Result<String, Problem> {
-    // Several areas are separated by spaces; a sheet holds one, so only the first is kept.
-    let first = address.split_whitespace().next().unwrap_or("");
-    reference(first)
+    // Several areas are separated by spaces (outside quoted tab names); a name holds one, so the first is kept.
+    let t = address.trim();
+    let mut end = t.len();
+    let mut quoted = false;
+    for (i, c) in t.char_indices() {
+        match c {
+            '\'' => quoted = !quoted,
+            c if c.is_whitespace() && !quoted => {
+                end = i;
+                break;
+            }
+            _ => {}
+        }
+    }
+    reference(&t[..end])
 }
 
 // ---- writing ----------------------------------------------------------------------------------------------------
@@ -387,6 +399,17 @@ fn write(e: &Expr, row: u32, col: u32, names: &dyn TabNames, out: &mut String) {
                 }
             }
             out.push('}');
+        }
+        Expr::Invoke(callee, args) => {
+            write(callee, row, col, names, out);
+            out.push('(');
+            for (i, a) in args.iter().enumerate() {
+                if i > 0 {
+                    out.push(';');
+                }
+                write(a, row, col, names, out);
+            }
+            out.push(')');
         }
         #[allow(unreachable_patterns)]
         other => out.push_str(&crate::formula::parse::to_a1(other, row, col, names)),

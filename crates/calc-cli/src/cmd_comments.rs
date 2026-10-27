@@ -118,6 +118,23 @@ pub fn render_thread(t: &Thread, ids: bool) -> String {
     out
 }
 
+/// Tells (on stderr) about mentions that reached nobody: the account can't open the sheet, so it wasn't told.
+fn warn_unreached(ctx: &Ctx, without: &[silicon_calc_client::Account], sheet: Option<&str>) {
+    if without.is_empty() {
+        return;
+    }
+    let ids: Vec<&str> = without.iter().map(|a| a.label()).collect();
+    let share = match sheet {
+        Some(s) => format!("calc share add {s} {} --role commenter", ids.join(" ")),
+        None => format!("calc share add SHEET {} --role commenter", ids.join(" ")),
+    };
+    ctx.warn(format!(
+        "{} can't open this sheet, so {} not told about the mention. Share it with them first ({share}), then mention them again.",
+        ids.join(", "),
+        if ids.len() == 1 { "was" } else { "were" }
+    ));
+}
+
 /// Several threads, a blank line between them.
 pub fn render_threads(threads: &[Thread], ids: bool) -> String {
     threads.iter().map(|t| render_thread(t, ids)).collect::<Vec<_>>().join("\n")
@@ -166,7 +183,11 @@ pub async fn add(ctx: &Ctx, sheet: &str, copy: Option<&str>, place: Option<&str>
         .client
         .create_thread(&target.line, &NewThread { tab: TabRef::Id(tab.id), range: range.clone(), body: body.clone() })
         .await?;
-    let mentioned = mentions_in(&body);
+    let mentioned: Vec<String> = mentions_in(&body)
+        .into_iter()
+        .filter(|m| !thread.mentioned_without_access.iter().any(|a| a.id.eq_ignore_ascii_case(m)))
+        .collect();
+    warn_unreached(ctx, &thread.mentioned_without_access, Some(&target.sheet.id));
     ctx.emit(&thread, || {
         let place = match &range {
             Some(r) => a1::with_tab(&tab.name, r),
@@ -184,6 +205,7 @@ pub async fn add(ctx: &Ctx, sheet: &str, copy: Option<&str>, place: Option<&str>
 pub async fn reply(ctx: &Ctx, thread: &str, body: &[String]) -> CliResult<()> {
     let body = body_text(body)?;
     let c = ctx.client.reply(thread.trim(), &body).await?;
+    warn_unreached(ctx, &c.mentioned_without_access, None);
     ctx.emit(&c, || format!("Replied in thread {} (comment {}).", thread.trim(), c.id));
     Ok(())
 }
@@ -191,6 +213,9 @@ pub async fn reply(ctx: &Ctx, thread: &str, body: &[String]) -> CliResult<()> {
 pub async fn edit(ctx: &Ctx, comment: &str, body: &[String]) -> CliResult<()> {
     let body = body_text(body)?;
     let c = ctx.client.edit_comment(comment.trim(), &body).await?;
+    if let Some(c) = &c {
+        warn_unreached(ctx, &c.mentioned_without_access, None);
+    }
     let value = c.map(|c| serde_json::to_value(c).unwrap_or_default()).unwrap_or_else(|| json!({"id": comment.trim(), "body": body}));
     ctx.emit(&value, || format!("Edited comment {}.", comment.trim()));
     Ok(())

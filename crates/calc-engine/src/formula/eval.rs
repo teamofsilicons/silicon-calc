@@ -43,6 +43,8 @@ impl Kind {
 
 /// What evaluation reads from.
 pub trait Grid {
+    fn has_javascript(&self, _name: &str) -> bool { false }
+    fn javascript(&self, _name: &str, _tab: TabId, _row: u32, _col: u32, _args: Vec<serde_json::Value>) -> Res { Res::err(ErrorKind::Name) }
     fn value(&self, tab: TabId, row: u32, col: u32) -> Value;
     /// How many rows and columns the tab has ids for (everything beyond is empty), or None when it doesn't exist.
     fn extent(&self, tab: TabId) -> Option<(u32, u32)>;

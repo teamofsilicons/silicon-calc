@@ -37,7 +37,7 @@ export function robotsTxt(origin: string): string {
 }
 
 export function sitemapXml(origin: string, modified: string): string {
-  const urls = [`${origin}/`, `${origin}/llms.txt`];
+  const urls = [`${origin}/`, `${origin}/llms.txt`, `${origin}/docs/javascript`];
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
@@ -56,6 +56,8 @@ export function llmsTxt(origin: string): string {
     `> ${tagline}`,
     "",
     description,
+    "",
+    `JavaScript guide: ${origin}/docs/javascript`,
     "",
     "## Install and sign in",
     "",

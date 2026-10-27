@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the Python the code runner uses: a virtual environment at .dev/runner-venv with exactly the packages in
+# Builds Python for the trusted file converters: a virtual environment at .dev/runner-venv with exactly the packages in
 # runner/requirements.txt (pandas, numpy, pyarrow, duckdb, numbers-parser, xlwt).
 #
 #   scripts/setup-runner.sh            # create or update it
@@ -37,7 +37,7 @@ fi
 echo "setup-runner: installing runner/requirements.txt"
 "$uv" pip install --python "$venv/bin/python" --requirement "$requirements"
 
-# Check that every package the runner gives code imports, so a broken install shows up now and not mid-run.
+# Check the converter environment so missing dependencies are reported during setup.
 "$venv/bin/python" -I -B - <<'PY'
 import importlib, sys
 mods = ["pandas", "numpy", "pyarrow", "pyarrow.parquet", "duckdb", "numbers_parser", "xlwt"]
@@ -49,3 +49,16 @@ print(f"setup-runner: Python {sys.version.split()[0]}, pandas {pandas.__version_
 PY
 
 echo "setup-runner: ready. CALC_RUNNER_PYTHON=$venv/bin/python"
+
+# ODS, XLS and PDF go through LibreOffice. Do not download or install a desktop app implicitly.
+if [[ -n "${CALC_RUNNER_LIBREOFFICE:-}" && -x "$CALC_RUNNER_LIBREOFFICE" ]]; then
+  echo "setup-runner: LibreOffice configured"
+elif [[ -x /Applications/LibreOffice.app/Contents/MacOS/soffice ]] || command -v soffice >/dev/null 2>&1; then
+  echo "setup-runner: LibreOffice available for XLS, ODS and PDF"
+else
+  echo "setup-runner: install LibreOffice for XLS, ODS and PDF conversions, or set CALC_RUNNER_LIBREOFFICE" >&2
+fi
+
+if [[ "${CALC_RUNNER_NUMBERS_ENABLE:-0}" == "1" ]]; then
+  echo "setup-runner: native Numbers bridge enabled; desktop-only, outside runner sandbox and app resource limits"
+fi

@@ -30,7 +30,8 @@ use crate::{
 pub(crate) type Stage = Box<dyn FnOnce(&Workbook) -> ApiResult<Option<Op>> + Send>;
 
 /// Runs inside the transaction that saves a change, with its version (notifications, copy bookkeeping).
-pub(crate) type TxHook = Box<dyn for<'c> FnOnce(&'c mut sqlx::PgConnection, i64) -> BoxFuture<'c, ApiResult<()>> + Send>;
+pub(crate) type TxHook =
+    Box<dyn for<'c> FnOnce(&'c mut sqlx::PgConnection, i64) -> BoxFuture<'c, ApiResult<()>> + Send>;
 
 /// A change to apply as one version.
 pub(crate) struct Job {
@@ -87,7 +88,10 @@ pub(crate) enum Cmd {
     Snapshot(oneshot::Sender<ApiResult<i64>>),
     Tick,
     Unload(oneshot::Sender<bool>),
-    Stop { save: bool, reply: Option<oneshot::Sender<()>> },
+    Stop {
+        save: bool,
+        reply: Option<oneshot::Sender<()>>,
+    },
 }
 
 struct Line {
@@ -101,12 +105,17 @@ struct Line {
 
 /// Loads a line and starts its task.
 pub(crate) async fn start(app: &AppState, line_id: &str) -> ApiResult<LineHandle> {
-    let row: Option<(String, bool)> = sqlx::query_as("select sheet_id, is_main from lines where id = $1")
-        .bind(line_id)
-        .fetch_optional(&app.db)
-        .await?;
+    let row: Option<(String, bool)> =
+        sqlx::query_as("select sheet_id, is_main from lines where id = $1")
+            .bind(line_id)
+            .fetch_optional(&app.db)
+            .await?;
     let Some((sheet_id, is_main)) = row else {
-        return Err(ApiError::not_found(if line_id.starts_with("main:") { "This sheet" } else { "This copy" }));
+        return Err(ApiError::not_found(if line_id.starts_with("main:") {
+            "This sheet"
+        } else {
+            "This copy"
+        }));
     };
     let loaded = store::load(app, line_id).await?;
     let (tx, rx) = mpsc::unbounded_channel();
@@ -118,15 +127,28 @@ pub(crate) async fn start(app: &AppState, line_id: &str) -> ApiResult<LineHandle
         tx,
         app.lines.inner.epoch,
     ));
-    let handle = LineHandle { line_id: shared.line_id.clone(), sheet_id: shared.sheet_id.clone(), shared: shared.clone() };
-    let line = Line { app: app.clone(), shared, last_snapshot: loaded.snapshot, writing: None };
+    let handle = LineHandle {
+        line_id: shared.line_id.clone(),
+        sheet_id: shared.sheet_id.clone(),
+        shared: shared.clone(),
+    };
+    let line = Line {
+        app: app.clone(),
+        shared,
+        last_snapshot: loaded.snapshot,
+        writing: None,
+    };
     tokio::spawn(line.run(rx));
     Ok(handle)
 }
 
 /// Runs CPU work on a blocking thread.
-pub(crate) async fn blocking<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -> ApiResult<R> {
-    tokio::task::spawn_blocking(f).await.map_err(|e| ApiError::internal(format!("a line's work failed: {e}")))
+pub(crate) async fn blocking<R: Send + 'static>(
+    f: impl FnOnce() -> R + Send + 'static,
+) -> ApiResult<R> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| ApiError::internal(format!("a line's work failed: {e}")))
 }
 
 /// Drops a big value off the async threads.
@@ -142,7 +164,13 @@ impl Line {
                     let res = self.job(*job).await;
                     let _ = reply.send(res);
                 }
-                Cmd::Undo { author, redo, base_version, client_id, reply } => {
+                Cmd::Undo {
+                    author,
+                    redo,
+                    base_version,
+                    client_id,
+                    reply,
+                } => {
                     let res = self.undo(author, redo, base_version, client_id).await;
                     let _ = reply.send(res);
                 }
@@ -209,21 +237,42 @@ impl Line {
             .bind(&*self.shared.sheet_id)
             .fetch_optional(&self.app.db)
             .await?;
-        row.map(|r| r.0).ok_or_else(|| ApiError::not_found("This sheet"))
-    }
-
-    fn handle(&self) -> LineHandle {
-        LineHandle { line_id: self.shared.line_id.clone(), sheet_id: self.shared.sheet_id.clone(), shared: self.shared.clone() }
+        row.map(|r| r.0)
+            .ok_or_else(|| ApiError::not_found("This sheet"))
     }
 
     async fn job(&mut self, job: Job) -> ApiResult<ApplyOutcome> {
-        let Job { author, kind, summary, base_version, client_id, stages, edits, undoes, redoes, hook, expect_version } = job;
+        let Job {
+            author,
+            kind,
+            summary,
+            base_version,
+            client_id,
+            stages,
+            edits,
+            undoes,
+            redoes,
+            hook,
+            expect_version,
+        } = job;
+        let open: bool = sqlx::query_scalar("select status='open' from lines where id=$1")
+            .bind(&*self.shared.line_id)
+            .fetch_one(&self.app.db)
+            .await?;
+        if !open {
+            return Err(ApiError::conflict(
+                "This copy is closed and cannot be changed.",
+                "Make a new copy to keep working.",
+            ));
+        }
         let before = self.shared.version();
         if let Some(v) = expect_version
             && v != before
         {
             return Err(ApiError::conflict(
-                format!("The sheet changed while this was being worked out (it was at version {v}, now {before})."),
+                format!(
+                    "The sheet changed while this was being worked out (it was at version {v}, now {before})."
+                ),
                 "Try again; it is worked out afresh from the latest version.",
             ));
         }
@@ -234,16 +283,40 @@ impl Line {
             owner: owner.to_string(),
             at: at.unix_timestamp(),
             index_errors: edits > 0,
-            kind,
             summary,
         };
         let Some(done) = self.apply(stages, ctx).await? else {
-            return Ok(ApplyOutcome { version: before, ..Default::default() });
+            if let Some(hook) = hook {
+                let mut tx = self.app.db.begin().await?;
+                hook(&mut tx, before).await?;
+                tx.commit().await?;
+                self.app.notify.wake();
+            }
+            return Ok(ApplyOutcome {
+                version: before,
+                ..Default::default()
+            });
         };
-        let Done { op, inverse, staged, info } = done;
+        let Done {
+            op,
+            inverse,
+            staged,
+            info,
+        } = done;
         let seq = before + 1;
-        let meta = store::OpMeta { seq, author, at, kind, client_id: client_id.clone(), undoes, redoes, staged };
-        if let Err(e) = store::persist(&self.app, &self.shared, &meta, op, inverse, &info, hook).await {
+        let meta = store::OpMeta {
+            seq,
+            author,
+            at,
+            kind,
+            client_id: client_id.clone(),
+            undoes,
+            redoes,
+            staged,
+        };
+        if let Err(e) =
+            store::persist(&self.app, &self.shared, &meta, op, inverse, &info, hook).await
+        {
             tracing::error!(line = %self.shared.line_id, error = %e.message, "saving a change failed; rebuilding the line");
             self.reload().await;
             return Err(e);
@@ -254,7 +327,16 @@ impl Line {
         // Cells someone else changed after the version the caller was looking at.
         let overwrites = match base_version {
             Some(b) if b < before && !info.candidates.is_empty() => {
-                match store::overwrites(&self.app, &self.shared.line_id, b, before, author, &info.candidates).await {
+                match store::overwrites(
+                    &self.app,
+                    &self.shared.line_id,
+                    b,
+                    before,
+                    author,
+                    &info.candidates,
+                )
+                .await
+                {
                     Ok(o) => o,
                     Err(e) => {
                         tracing::warn!(error = %e.message, "finding overwritten cells failed");
@@ -302,11 +384,14 @@ impl Line {
         }
         self.shared.publish(LineEvent::Change(event));
 
-        if !info.tabs_changed.is_empty() {
-            crate::code::rerun_dependents(&self.app, &self.handle(), &info.tabs_changed);
-        }
         self.snapshot_if_due().await;
-        Ok(ApplyOutcome { version: seq, changes: info.changes, overwrote, skipped: info.skipped, tabs_changed: info.tabs_changed })
+        Ok(ApplyOutcome {
+            version: seq,
+            changes: info.changes,
+            overwrote,
+            skipped: info.skipped,
+            tabs_changed: info.tabs_changed,
+        })
     }
 
     /// Applies a change in memory (atomically): see `apply`.
@@ -323,7 +408,9 @@ impl Line {
                 })
             })
             .await??;
-            let Some((op, copy)) = planned else { return Ok(None) };
+            let Some((op, copy)) = planned else {
+                return Ok(None);
+            };
             match copy {
                 None => {
                     let guard = self.shared.state.clone().write_owned().await;
@@ -347,7 +434,8 @@ impl Line {
                     }
                 }
                 Some(mut wb) => {
-                    let res = blocking(move || apply::on_copy(&mut wb, op, &ctx).map(|d| (wb, d))).await??;
+                    let res = blocking(move || apply::on_copy(&mut wb, op, &ctx).map(|d| (wb, d)))
+                        .await??;
                     Ok(Some(self.swap(res).await))
                 }
             }
@@ -393,12 +481,22 @@ impl Line {
                 self.last_snapshot = self.last_snapshot.max(loaded.snapshot);
                 self.shared.publish(LineEvent::Reset);
             }
-            Err(e) => tracing::error!(line = %self.shared.line_id, error = %e.message, "rebuilding a line failed"),
+            Err(e) => {
+                tracing::error!(line = %self.shared.line_id, error = %e.message, "rebuilding a line failed")
+            }
         }
     }
 
-    async fn undo(&mut self, author: Uuid, redo: bool, base_version: Option<i64>, client_id: Option<String>) -> ApiResult<ApplyOutcome> {
-        let Some(target) = store::undo_target(&self.app, &self.shared.line_id, author, redo).await? else {
+    async fn undo(
+        &mut self,
+        author: Uuid,
+        redo: bool,
+        base_version: Option<i64>,
+        client_id: Option<String>,
+    ) -> ApiResult<ApplyOutcome> {
+        let Some(target) =
+            store::undo_target(&self.app, &self.shared.line_id, author, redo).await?
+        else {
             return Err(if redo {
                 ApiError::conflict(
                     "There is nothing of yours to redo on this sheet.",
@@ -412,8 +510,16 @@ impl Line {
             });
         };
         let inverse = target.inverse;
-        let summary = format!("{} \"{}\"", if redo { "redid" } else { "undid" }, target.summary);
-        let mut job = Job::new(author, if redo { OpKind::Redo } else { OpKind::Undo }, vec![Box::new(move |_| Ok(Some(inverse)))]);
+        let summary = format!(
+            "{} \"{}\"",
+            if redo { "redid" } else { "undid" },
+            target.summary
+        );
+        let mut job = Job::new(
+            author,
+            if redo { OpKind::Redo } else { OpKind::Undo },
+            vec![Box::new(move |_| Ok(Some(inverse)))],
+        );
         job.summary = Some(summary);
         job.base_version = base_version;
         job.client_id = client_id;
@@ -437,8 +543,12 @@ impl Line {
         let (v, h) = self.writing.take().expect("checked");
         match h.await {
             Ok(Ok(written)) => self.last_snapshot = self.last_snapshot.max(written),
-            Ok(Err(e)) => tracing::warn!(line = %self.shared.line_id, version = v, error = %e.message, "writing a snapshot failed"),
-            Err(e) => tracing::warn!(line = %self.shared.line_id, version = v, error = %e, "writing a snapshot failed"),
+            Ok(Err(e)) => {
+                tracing::warn!(line = %self.shared.line_id, version = v, error = %e.message, "writing a snapshot failed")
+            }
+            Err(e) => {
+                tracing::warn!(line = %self.shared.line_id, version = v, error = %e, "writing a snapshot failed")
+            }
         }
     }
 
@@ -446,8 +556,15 @@ impl Line {
     async fn start_snapshot(&mut self) -> ApiResult<()> {
         let guard = self.shared.state.clone().read_owned().await;
         let (wb, version) = blocking(move || (guard.wb.clone(), guard.version)).await?;
-        let (app, line, sheet, main) = (self.app.clone(), self.shared.line_id.to_string(), self.shared.sheet_id.to_string(), self.shared.is_main);
-        let h = tokio::spawn(async move { store::write_snapshot(&app, &line, &sheet, main, wb, version).await });
+        let (app, line, sheet, main) = (
+            self.app.clone(),
+            self.shared.line_id.to_string(),
+            self.shared.sheet_id.to_string(),
+            self.shared.is_main,
+        );
+        let h = tokio::spawn(async move {
+            store::write_snapshot(&app, &line, &sheet, main, wb, version).await
+        });
         self.writing = Some((version, h));
         Ok(())
     }
@@ -458,7 +575,9 @@ impl Line {
         if self.shared.version() > self.last_snapshot {
             self.start_snapshot().await?;
             let (_, h) = self.writing.take().expect("just started");
-            let v = h.await.map_err(|e| ApiError::internal(format!("writing a snapshot failed: {e}")))??;
+            let v = h
+                .await
+                .map_err(|e| ApiError::internal(format!("writing a snapshot failed: {e}")))??;
             self.last_snapshot = self.last_snapshot.max(v);
         }
         Ok(self.last_snapshot)
@@ -487,5 +606,6 @@ impl Line {
 /// Now, to the microsecond (what Postgres keeps), so the time saved is the time used.
 pub(crate) fn now() -> OffsetDateTime {
     let t = OffsetDateTime::now_utc();
-    t.replace_nanosecond(t.nanosecond() / 1_000 * 1_000).unwrap_or(t)
+    t.replace_nanosecond(t.nanosecond() / 1_000 * 1_000)
+        .unwrap_or(t)
 }

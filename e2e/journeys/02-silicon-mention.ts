@@ -1,26 +1,19 @@
-// The story Silicon Calc is for: a Carbon brings in data and asks a Silicon about it by mentioning it on a range;
-// the Silicon gets everything it needs in a ting, reads the cells with the calc command line, answers the question
-// with SQL and Python into new tabs, and replies in the thread; the Carbon is told, sees every change live, and
-// every cell says who made it. Then the rest of comments: reactions, resolving (and the ting for it), reopening,
-// comments that move with their cells, a Silicon's comment telling the owner, code tabs that keep themselves
-// updated, and JavaScript.
+// A Carbon mentions a Silicon on a range; authenticated CLI/HTTP reads, supplied-result commits,
+// live attribution, comments, mentions and protected persistence are verified here.
+// Result tables below are fixtures supplied by this API client; JavaScript execution is proved by the browser suite.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { type Sheet, type Tab, type Thread, CalcApi, at, plain } from '../lib/calc.ts';
 import { LiveEvents } from '../lib/events.ts';
-import { SALES_FILE, revenueByMonth, revenueOf, salesGrid, totalRevenue } from '../lib/fixtures.ts';
-import { eventually, journey } from '../lib/journey.ts';
-import { num, sameGrid, viaCli } from '../lib/steps.ts';
+import { revenueByMonth, revenueOf, salesGrid, totalRevenue } from '../lib/fixtures.ts';
+import { journey, sleep } from '../lib/journey.ts';
+import { salesSheet, tabsOf } from '../lib/sheets.ts';
+import { needs, num, sameGrid, viaCli } from '../lib/steps.ts';
 import type { TingView } from '../lib/ting.ts';
 import { type CarbonPerson, type SiliconPerson, world } from '../lib/world.ts';
 
-async function tabs(api: CalcApi, sheet: string): Promise<Tab[]> {
-  return (await api.get<Sheet>(`/v1/sheets/${sheet}`)).tabs ?? [];
-}
-
 async function findTab(api: CalcApi, sheet: string, name: string): Promise<Tab | undefined> {
-  return (await tabs(api, sheet)).find((t) => t.name === name);
+  return (await tabsOf(api, sheet)).find((t) => t.name === name);
 }
 
 async function thread(api: CalcApi, sheet: string, id: string): Promise<Thread> {
@@ -30,8 +23,8 @@ async function thread(api: CalcApi, sheet: string, id: string): Promise<Thread> 
   return t;
 }
 
-const sqlTab = 'By month';
-const pyTab = 'March vs February';
+const monthlyTab = 'By month';
+const comparisonTab = 'March vs February';
 
 export default journey('A Carbon mentions a Silicon on a range; the Silicon does the analysis', (j) => {
   const w = world();
@@ -40,13 +33,17 @@ export default journey('A Carbon mentions a Silicon on a range; the Silicon does
   let sheet: Sheet;
   let tab: { id: number; name: string };
   let live: LiveEvents | null = null;
+  let watch: ReturnType<SiliconPerson['cli']['start']> | null = null;
   let thr: Thread;
   let mention: TingView;
   let replyId: string;
   let since = 0;
   let cliSignedIn = false;
 
-  j.cleanup(async () => live?.close());
+  j.cleanup(async () => {
+    live?.close();
+    watch?.stop();
+  });
 
   j.step('a Carbon, and a Silicon it made (its custodian)', async () => {
     ada = await w.carbon('Ada');
@@ -64,10 +61,9 @@ export default journey('A Carbon mentions a Silicon on a range; the Silicon does
     cliSignedIn = true;
   });
 
-  j.step('the Carbon opens the sales CSV as a new sheet', async () => {
-    sheet = await ada.api.post<Sheet>('/v1/sheets/import', { query: { filename: 'sales-2026.csv', title: 'Sales 2026' }, body: readFileSync(SALES_FILE), contentType: 'text/csv' }, 201);
-    const t = (await tabs(ada.api, sheet.id))[0]!;
-    tab = { id: t.id, name: t.name };
+  salesSheet(j, 'the Carbon', () => ada.api, 'Sales 2026', (o) => {
+    sheet = o.sheet;
+    tab = o.tab;
   });
 
   j.step('the Carbon finds the Silicon by its si: id', async () => {
@@ -79,6 +75,7 @@ export default journey('A Carbon mentions a Silicon on a range; the Silicon does
   });
 
   j.step('the Carbon invites the Silicon as an editor by its si: id', async () => {
+    since = await w.ting.seq();
     const sharing = await ada.api.post(`/v1/sheets/${sheet.id}/sharing`, { json: { invite: [si.id], role: 'editor', notify: true } });
     const m = sharing.members.find((x: any) => x.account.uuid === si.uuid);
     assert.ok(m, 'the Silicon is a member');
@@ -93,7 +90,7 @@ export default journey('A Carbon mentions a Silicon on a range; the Silicon does
     assert.equal(t.data.sheet?.id, sheet.id, 'the ting names the sheet');
     assert.equal(t.data.sheet?.title, 'Sales 2026');
     assert.ok(String(t.data.url ?? '').includes(sheet.id), `the ting links to the sheet (${t.data.url})`);
-    j.note(`key ${t.key}`);
+    j.note(`key ${t.key}; data: ${JSON.stringify(t.data).slice(0, 300)}`);
   });
 
   j.step('the Silicon sees the sheet among those shared with it', async () => {
@@ -105,7 +102,7 @@ export default journey('A Carbon mentions a Silicon on a range; the Silicon does
   });
 
   j.check('the Silicon lists it with the CLI (calc ls --shared)', async () => {
-    if (!cliSignedIn) throw new Error('the CLI is not signed in (see the login check)');
+    needs(cliSignedIn, 'the CLI is not signed in (see the login check)');
     const out = await si.cli.json(['ls', '--shared']);
     assert.ok(JSON.stringify(out).includes(sheet.id), 'calc ls --shared lists the sheet');
   });
@@ -113,6 +110,18 @@ export default journey('A Carbon mentions a Silicon on a range; the Silicon does
   j.check('the Carbon watches the sheet live (GET /v1/sheets/{id}/events)', async () => {
     const v = (await ada.api.get(`/v1/sheets/${sheet.id}/tabs`)).version;
     live = await LiveEvents.open(ada.api, CalcApi.line(sheet.id), v);
+  });
+
+  j.check('the Silicon waits for mentions with the CLI and shows itself on the sheet (calc watch --mentions --here)', async () => {
+    needs(cliSignedIn, 'the CLI is not signed in (see the login check)');
+    watch = si.cli.start(['--json', 'watch', sheet.id, '--only', 'comment', '--mentions', '--count', '1', '--timeout', '90', '--here', `${tab.name}!A1`], { timeoutMs: 100_000 });
+    if (live) {
+      // The Carbon sees the Silicon on the sheet: then the watch is connected.
+      const p = await live.next((e) => e.event === 'presence' && (e.data?.viewers ?? []).some((v: any) => v.account?.uuid === si.uuid), 20_000, 'a presence event naming the Silicon');
+      j.note(`the Carbon sees ${p.data.viewers.map((v: any) => v.account?.id).join(', ')} on the sheet`);
+    } else {
+      await sleep(2000);
+    }
   });
 
   j.step('the Carbon selects the revenue column and asks the Silicon why March dropped', async () => {
@@ -147,21 +156,33 @@ export default journey('A Carbon mentions a Silicon on a range; the Silicon does
     j.note(`data: ${JSON.stringify(d).slice(0, 400)}`);
   });
 
+  j.check('the Silicon\'s calc watch saw the mention as it happened', async () => {
+    needs(watch, 'calc watch was not started (see that check)');
+    const r = await watch!.done;
+    assert.equal(r.code, 0, `calc watch exited ${r.code}: ${r.stderr.trim().slice(0, 300)}`);
+    const text = watch!.lines.join('\n');
+    assert.ok(text.includes(thr.id) || text.includes('why did March drop?'), `calc watch printed the comment (${text.slice(0, 300)})`);
+  });
+
   j.check('the owner is not told about a comment the owner wrote (no calc.comment.created)', async () => {
     await w.ting.none({ for: ada.uuid, type: 'calc.comment.created', after: since }, 2500);
   });
 
-  j.check('the Silicon reads the commented range with the CLI (calc read … --format csv)', async () => {
-    const csv = await si.cli.text(['read', mention.data.sheet.id, 'E1:E37', '--tab', mention.data.tab.name, '--format', 'csv']);
+  j.check('the Silicon reads the cells the ting names with the CLI (calc read … --format csv)', async () => {
+    needs(cliSignedIn, 'the CLI is not signed in (see the login check)');
+    const d = mention.data;
+    const csv = await si.cli.text(['read', d.sheet.id, d.range, '--tab', d.tab.name, '--format', 'csv']);
     const lines = csv.trim().split(/\r?\n/);
-    assert.equal(lines.length, 37, `${lines.length} lines`);
-    assert.equal(lines[0], 'revenue');
-    assert.equal(lines[7], String(revenueOf('March', 'EU')), 'E8 is EU in March');
+    assert.equal(lines.length, 36, `${lines.length} lines`);
+    assert.equal(lines[6], String(revenueOf('March', 'EU')), 'E8 is EU in March');
   });
 
-  j.check('the Silicon reads the whole table with the CLI as JSON (calc --json read)', async () => {
-    const out = await si.cli.json(['read', sheet.id, 'A1:E37', '--tab', tab.name]);
-    assert.ok(JSON.stringify(out).includes('September'), 'the JSON has the cells');
+  j.check('the Silicon reads the table with the comments on it as JSON (calc --json read … --comments)', async () => {
+    needs(cliSignedIn, 'the CLI is not signed in (see the login check)');
+    const out = await si.cli.json(['read', sheet.id, 'A1:E37', '--tab', tab.name, '--comments']);
+    const text = JSON.stringify(out);
+    assert.ok(text.includes('September'), 'the JSON has the cells');
+    assert.ok(text.includes('why did March drop?'), 'and the comment on them');
   });
 
   j.step('the Silicon reads the table over HTTP as the same Silicon', async () => {
@@ -169,75 +190,42 @@ export default journey('A Carbon mentions a Silicon on a range; the Silicon does
     sameGrid(values, salesGrid(), 'what the Silicon reads');
   });
 
-  const quoted = () => `"${tab.name.replace(/"/g, '""')}"`;
-  const sql = () => `select month, m, sum(revenue) as revenue from ${quoted()} group by month, m order by m`;
-
-  viaCli(j, 'the Silicon answers with SQL into a new tab "By month"', 'calc run sql … --new-tab', {
-    cli: () => si.cli.json(['run', 'sql', sheet.id, '-c', sql(), '--new-tab', sqlTab]),
-    http: async () => {
-      if (await findTab(si.api, sheet.id, sqlTab)) return null;
-      const r = await si.api.post(`/v1/sheets/${sheet.id}/run`, { json: { language: 'sql', code: sql(), into: { new_tab: sqlTab }, keep_updated: false } });
-      assert.deepEqual(r.columns, ['month', 'm', 'revenue']);
-      assert.equal(r.row_count, 12);
-      assert.equal(r.truncated, false);
-      assert.ok(r.version !== null, 'writing a new tab makes a version');
-      assert.equal(r.tab?.name, sqlTab);
-      return r;
-    },
-    then: async () => {
-      const t = await findTab(ada.api, sheet.id, sqlTab);
-      assert.ok(t, `the sheet has a tab "${sqlTab}"`);
-      assert.equal(t.code?.language, 'sql', 'the tab remembers the code that made it');
-      assert.match(String(t.code?.code), /group by month/i);
-      assert.equal(t.code?.run_by?.uuid, si.uuid, 'and who ran it');
-      const values = await ada.api.values(sheet.id, t.id, 'A1:C13');
-      sameGrid(values, [['month', 'm', 'revenue'], ...revenueByMonth().map((r) => [r.month, r.m, r.revenue])], 'revenue by month');
-    },
+  j.step('the Silicon commits supplied monthly results into a new tab', async () => {
+    const base_version = (await si.api.get(`${CalcApi.line(sheet.id)}/tabs`)).version;
+    const rows = revenueByMonth().map((r) => [r.month, r.m, r.revenue]);
+    const code = `const {rows} = await calc.tab(${JSON.stringify(tab.name)}); const months = new Map(); for (const [month,m,region,units,revenue] of rows) { const total = months.get(m) ?? {month,m,revenue:0}; total.revenue += revenue; months.set(m,total); } return [...months.values()].sort((a,b) => a.m-b.m);`;
+    const r = await si.api.post(`${CalcApi.line(sheet.id)}/run`, { json: { code, base_version, inputs: [tab.id], columns: ['month', 'm', 'revenue'], rows, into: { new_tab: monthlyTab } } });
+    assert.equal(r.row_count, 12);
+    assert.ok(r.version > base_version, 'committing results makes one version');
+    const t = await findTab(ada.api, sheet.id, monthlyTab);
+    assert.ok(t);
+    assert.equal(t.code?.language, 'javascript');
+    assert.equal(t.code?.code, code, 'the supplied JavaScript source is saved');
+    assert.equal(t.code?.run_by?.uuid, si.uuid, 'the server records the authenticated author');
+    sameGrid(await ada.api.values(sheet.id, t.id, 'A1:C13'), [['month', 'm', 'revenue'], ...rows], 'supplied monthly results');
   });
 
-  const python = () =>
-    [
-      `df = calc.tab(${JSON.stringify(tab.name)})`,
-      'two = df[df["month"].isin(["February", "March"])]',
-      'p = two.pivot_table(index="region", columns="month", values="revenue", aggfunc="sum").reset_index()',
-      'p["change"] = p["March"] - p["February"]',
-      'result = p[["region", "February", "March", "change"]].sort_values("change")',
-      'print("regions:", len(result))',
-    ].join('\n');
-
-  viaCli(j, 'the Silicon compares March with February in Python into a new tab', 'calc run python … --new-tab', {
-    cli: () => si.cli.json(['run', 'python', sheet.id, '-c', python(), '--new-tab', pyTab]),
-    http: async () => {
-      if (await findTab(si.api, sheet.id, pyTab)) return null;
-      const r = await si.api.post(`/v1/sheets/${sheet.id}/run`, { json: { language: 'python', code: python(), into: { new_tab: pyTab } } });
-      assert.match(r.stdout, /regions: 3/, 'print goes to stdout');
-      return r;
-    },
-    then: async () => {
-      const t = await findTab(ada.api, sheet.id, pyTab);
-      assert.ok(t, `the sheet has a tab "${pyTab}"`);
-      assert.equal(t.code?.language, 'python');
-      assert.equal(t.code?.run_by?.uuid, si.uuid);
-      const values = await ada.api.values(sheet.id, t.id, 'A1:D4');
-      sameGrid(values.map((r) => r.map((v) => (typeof v === 'number' ? Math.round(v) : v))), [
-        ['region', 'February', 'March', 'change'],
-        ['EU', 12800, 3900, -8900],
-        ['APAC', 7900, 8100, 200],
-        ['US', 21500, 21900, 400],
-      ], 'March against February');
-    },
-    timeoutMs: 180_000,
+  j.step('the Silicon commits supplied March and February comparison results', async () => {
+    const base_version = (await si.api.get(`${CalcApi.line(sheet.id)}/tabs`)).version;
+    const rows = [['EU', 12800, 3900, -8900], ['APAC', 7900, 8100, 200], ['US', 21500, 21900, 400]];
+    const code = `const {rows} = await calc.tab(${JSON.stringify(tab.name)}); return ["EU","APAC","US"].map(region => { const February = rows.find(r => r[2] === region && r[0] === "February")[4]; const March = rows.find(r => r[2] === region && r[0] === "March")[4]; return {region, February, March, change: March-February}; }).sort((a,b) => a.change-b.change);`;
+    const r = await si.api.post(`${CalcApi.line(sheet.id)}/run`, { json: { code, base_version, inputs: [tab.id], columns: ['region', 'February', 'March', 'change'], rows, into: { new_tab: comparisonTab } } });
+    const t = await findTab(ada.api, sheet.id, comparisonTab);
+    assert.ok(t);
+    assert.equal(r.tab.id, t.id);
+    assert.equal(t.code?.run_by?.uuid, si.uuid);
+    sameGrid(await ada.api.values(sheet.id, t.id, 'A1:D4'), [['region', 'February', 'March', 'change'], ...rows], 'supplied comparison results');
   });
 
   j.check('the Carbon saw the Silicon\'s changes as they happened', async () => {
-    if (!live) throw new Error('the live stream could not be opened (see that check)');
-    const e = await live.next((x) => x.event === 'change' && x.data?.by?.uuid === si.uuid, 15_000, "a change event by the Silicon");
+    needs(live, 'the live stream could not be opened (see that check)');
+    const e = await live!.next((x) => x.event === 'change' && x.data?.by?.uuid === si.uuid, 15_000, 'a change event by the Silicon');
     assert.equal(e.data.by.id, si.id, 'the change says who made it, by si: id');
     assert.ok(Array.isArray(e.data.changes) && e.data.changes.length > 0);
   });
 
   j.step('every cell the Silicon wrote says it was the Silicon', async () => {
-    const t = (await findTab(ada.api, sheet.id, sqlTab))!;
+    const t = (await findTab(ada.api, sheet.id, monthlyTab))!;
     const cells = await ada.api.cells(sheet.id, t.id, 'A1:C13');
     assert.ok(cells.cells.length >= 39);
     for (const c of cells.cells) assert.equal(c.by, si.uuid, `${c.a} was last changed by ${c.by}`);
@@ -248,7 +236,10 @@ export default journey('A Carbon mentions a Silicon on a range; the Silicon does
   const replyBody = 'March fell because EU revenue dropped from 12,800 to 3,900 (-8,900) while US and APAC grew. The numbers are in the tabs By month and March vs February.';
 
   viaCli(j, 'the Silicon replies in the thread', 'calc comments reply', {
-    cli: () => si.cli.json(['comments', 'reply', thr.id, replyBody]),
+    cli: async () => {
+      needs(cliSignedIn, 'the CLI is not signed in (see the login check)');
+      return si.cli.json(['comments', 'reply', thr.id, replyBody]);
+    },
     http: async () => {
       const t = await thread(si.api, sheet.id, thr.id);
       if (t.comments.some((c) => c.author.uuid === si.uuid)) return null;
@@ -271,6 +262,7 @@ export default journey('A Carbon mentions a Silicon on a range; the Silicon does
     assert.equal(t.data.sheet?.id, sheet.id);
     assert.equal(t.data.comment?.author?.id, si.id, 'the reply is the Silicon\'s');
     assert.match(String(t.data.comment?.body), /EU revenue dropped/);
+    j.note(`data: ${JSON.stringify(t.data).slice(0, 300)}`);
   });
 
   j.check('the replier is not told about its own reply', async () => {
@@ -278,6 +270,7 @@ export default journey('A Carbon mentions a Silicon on a range; the Silicon does
   });
 
   j.check('the Silicon reads the thread with the CLI (calc comments show)', async () => {
+    needs(cliSignedIn, 'the CLI is not signed in (see the login check)');
     const out = await si.cli.json(['comments', 'show', thr.id]);
     const text = JSON.stringify(out);
     assert.ok(text.includes('why did March drop?') && text.includes('EU revenue dropped'), 'both comments');
@@ -291,7 +284,10 @@ export default journey('A Carbon mentions a Silicon on a range; the Silicon does
   });
 
   viaCli(j, 'the Silicon resolves the thread', 'calc comments resolve', {
-    cli: () => si.cli.json(['comments', 'resolve', thr.id]),
+    cli: async () => {
+      needs(cliSignedIn, 'the CLI is not signed in (see the login check)');
+      return si.cli.json(['comments', 'resolve', thr.id]);
+    },
     http: async () => {
       const t = await thread(si.api, sheet.id, thr.id);
       if (t.status === 'resolved') return t;
@@ -317,15 +313,44 @@ export default journey('A Carbon mentions a Silicon on a range; the Silicon does
     assert.ok(open.threads.some((x: Thread) => x.id === thr.id));
   });
 
+  j.check('comments go on a row, a column and a whole tab too', async () => {
+    const row = await ada.api.post<Thread>(`/v1/sheets/${sheet.id}/comments`, { json: { tab: tab.id, range: '8:8', body: 'This row is the odd one.' } }, 201);
+    assert.equal(row.range, '8:8');
+    const col = await ada.api.post<Thread>(`/v1/sheets/${sheet.id}/comments`, { json: { tab: tab.id, range: 'D:D', body: 'Units are pieces, not boxes.' } }, 201);
+    assert.equal(col.range, 'D:D');
+    const whole = await ada.api.post<Thread>(`/v1/sheets/${sheet.id}/comments`, { json: { tab: tab.id, range: null, body: 'This tab is the export from October.' } }, 201);
+    assert.equal(whole.range, null, 'a comment on the whole tab has no range');
+    const list = await ada.api.get<{ threads: Thread[] }>(`/v1/sheets/${sheet.id}/comments`, { query: { status: 'open', tab: tab.id } });
+    for (const t of [row, col, whole]) assert.ok(list.threads.some((x) => x.id === t.id), `the tab's threads include ${t.range ?? 'the whole tab'}`);
+  });
+
   let siComment: Thread;
-  j.step('the Silicon comments on the sheet; the owner gets calc.comment.created', async () => {
-    since = await w.ting.seq();
-    const t = (await findTab(si.api, sheet.id, sqlTab))!;
-    siComment = await si.api.post<Thread>(`/v1/sheets/${sheet.id}/comments`, { json: { tab: t.id, range: 'C4', body: 'March is the only month that went down.' } }, 201);
-    const ting = await w.ting.wait({ for: ada.uuid, type: 'calc.comment.created', after: since });
-    assert.equal(ting.data.thread_id, siComment.id);
-    assert.equal(ting.data.comment?.author?.id, si.id);
-    assert.equal(ting.data.range, 'C4');
+  let byMonth: Tab;
+  viaCli(j, 'the Silicon comments on its own tab; the owner gets calc.comment.created', 'calc comments add', {
+    cli: async () => {
+      needs(cliSignedIn, 'the CLI is not signed in (see the login check)');
+      since = await w.ting.seq();
+      return si.cli.json(['comments', 'add', sheet.id, `'${monthlyTab}'!C4`, 'March is the only month that went down.']);
+    },
+    http: async () => {
+      const t = (await findTab(si.api, sheet.id, monthlyTab))!;
+      const list = await si.api.get<{ threads: Thread[] }>(`/v1/sheets/${sheet.id}/comments`, { query: { status: 'all', tab: t.id } });
+      const made = list.threads.find((x) => x.comments[0]?.author.uuid === si.uuid);
+      if (made) return made;
+      since = await w.ting.seq();
+      return si.api.post<Thread>(`/v1/sheets/${sheet.id}/comments`, { json: { tab: t.id, range: 'C4', body: 'March is the only month that went down.' } }, 201);
+    },
+    then: async () => {
+      byMonth = (await findTab(si.api, sheet.id, monthlyTab))!;
+      const list = await ada.api.get<{ threads: Thread[] }>(`/v1/sheets/${sheet.id}/comments`, { query: { status: 'all', tab: byMonth.id } });
+      siComment = list.threads.find((x) => x.comments[0]?.author.uuid === si.uuid)!;
+      assert.ok(siComment, `the Silicon's comment is on ${monthlyTab}`);
+      assert.equal(siComment.range, 'C4');
+      const ting = await w.ting.wait({ for: ada.uuid, type: 'calc.comment.created', after: since });
+      assert.equal(ting.data.thread_id, siComment.id);
+      assert.equal(ting.data.comment?.author?.id, si.id);
+      assert.equal(ting.data.range, 'C4');
+    },
   });
 
   j.check('a comment is edited by its author only', async () => {
@@ -335,34 +360,41 @@ export default journey('A Carbon mentions a Silicon on a range; the Silicon does
     await ada.api.refused('PATCH', `/v1/comments/${id}`, { json: { body: 'not mine' } }, 403, 'not_allowed');
   });
 
-  const totalSql = () => `select sum(revenue) as total from ${quoted()}`;
-  j.step('the Silicon makes a total that keeps itself updated', async () => {
-    const r = await si.api.post(`/v1/sheets/${sheet.id}/run`, { json: { language: 'sql', code: totalSql(), into: { new_tab: 'Total' }, keep_updated: true } });
-    assert.equal(r.tab?.code?.keep_updated, true);
-    const t = (await findTab(si.api, sheet.id, 'Total'))!;
-    assert.equal(num((await si.api.values(sheet.id, t.id, 'A2'))[0]![0]), totalRevenue());
+  let totalTab: Tab;
+  let totalVersion: number;
+  j.step('the Silicon commits a supplied total with JavaScript provenance', async () => {
+    const base_version = (await si.api.get(`${CalcApi.line(sheet.id)}/tabs`)).version;
+    const r = await si.api.post(`${CalcApi.line(sheet.id)}/run`, { json: { code: `const {rows} = await calc.tab(${JSON.stringify(tab.name)}); return [{total: rows.reduce((n,r) => n+r[4],0)}];`, base_version, inputs: [tab.id], columns: ['total'], rows: [[totalRevenue()]], into: { new_tab: 'Total' } } });
+    totalTab = r.tab;
+    totalVersion = r.version;
+    assert.equal(num((await si.api.values(sheet.id, totalTab.id, 'A2'))[0]![0]), totalRevenue());
   });
 
-  j.step('when the Carbon corrects March, the total follows', async () => {
+  j.step('a source edit leaves committed results unchanged until the browser runs again', async () => {
     await ada.api.edit(sheet.id, [{ type: 'set', tab: tab.id, cells: [{ a: 'E8', input: '4900' }] }]);
-    const t = (await findTab(ada.api, sheet.id, 'Total'))!;
-    await eventually('the keep-updated total to rerun', async () => num((await ada.api.values(sheet.id, t.id, 'A2'))[0]![0]) === totalRevenue() + 1000, 45_000, 500);
-    const after = (await findTab(ada.api, sheet.id, 'Total'))!;
-    assert.equal(after.code?.run_by?.uuid, si.uuid, 'it reruns as the Silicon who set it up');
+    assert.equal(num((await ada.api.values(sheet.id, totalTab.id, 'A2'))[0]![0]), totalRevenue());
+    const t = byMonth ?? (await findTab(ada.api, sheet.id, monthlyTab))!;
+    const march = revenueByMonth().find((r) => r.month === 'March')!;
+    assert.equal(num((await ada.api.values(sheet.id, t.id, 'A4:C4'))[0]![2]), march.revenue);
   });
 
-  j.check('JavaScript runs on the sheet too', async () => {
-    const code = `return calc.tab(${JSON.stringify(tab.name)}).filter((r) => r.region === "EU").map((r) => ({ month: r.month, revenue: r.revenue }));`;
-    const r = await si.api.post(`/v1/sheets/${sheet.id}/run`, { json: { language: 'javascript', code, into: null } });
-    assert.equal(r.row_count, 12);
-    assert.deepEqual(r.columns, ['month', 'revenue']);
-    const march = r.rows.find((x: unknown[]) => x[0] === 'March');
-    assert.equal(num(march?.[1]), 4900);
+  j.check('a result commit from an older snapshot is rejected atomically', async () => {
+    await si.api.refused('POST', `${CalcApi.line(sheet.id)}/run`, { json: { code: totalTab.code!.code, base_version: totalVersion, inputs: [tab.id], columns: ['total'], rows: [[0]], into: { tab: totalTab.id, at: 'A1', replace: true } } }, 409, 'conflict');
+    assert.equal(num((await ada.api.values(sheet.id, totalTab.id, 'A2'))[0]![0]), totalRevenue(), 'the stale result did not overwrite the committed value');
   });
 
-  j.check('code that fails says why (code_failed)', async () => {
-    const e = await si.api.refused('POST', `/v1/sheets/${sheet.id}/run`, { json: { language: 'python', code: 'raise ValueError("no such column")' } }, 422, 'code_failed');
-    assert.match(String(e.details?.stderr), /no such column/);
+  j.check('committing supplied results does not execute their JavaScript source on the server', async () => {
+    const base_version = (await si.api.get(`${CalcApi.line(sheet.id)}/tabs`)).version;
+    const code = 'throw new Error("The API must not execute this source");';
+    const r = await si.api.post(`${CalcApi.line(sheet.id)}/run`, { json: { code, base_version, inputs: [], columns: ['supplied'], rows: [[123]], into: { new_tab: 'Supplied result' } } });
+    assert.equal(num((await ada.api.values(sheet.id, r.tab.id, 'A2'))[0]![0]), 123);
+    assert.equal(r.tab.code.code, code);
+  });
+
+  j.check('the Silicon finds the sheet by a word in its cells with the CLI (calc search)', async () => {
+    needs(cliSignedIn, 'the CLI is not signed in (see the login check)');
+    const out = await si.cli.json(['search', 'September']);
+    assert.ok(JSON.stringify(out).includes(sheet.id), 'calc search finds the sheet');
   });
 
   j.check('a comment stays on its cells as rows are inserted above them', async () => {

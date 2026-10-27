@@ -1,7 +1,4 @@
-//! What code can read of a sheet: its tab names, any tab, range or defined name as a table, and single cells.
-//!
-//! The service reads a line's live workbook through this (taking the line's read lock only for each read, so a
-//! long run never holds up edits); tests and conversions read a `Workbook` directly.
+//! Workbook reads used by trusted file conversions.
 
 use std::sync::Arc;
 
@@ -12,16 +9,16 @@ use calc_engine::{
 
 use crate::table::{self, Table};
 
-/// A cell as code reads it.
+/// A cell read for conversion.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CellRead {
     pub tab: TabId,
     pub value: Value,
-    /// The cell's number format, when it has one (dates show as dates to code).
+    /// The cell's number format, when it has one (used for dates during conversion).
     pub format: Option<String>,
 }
 
-/// A sheet code can read.
+/// A workbook read interface for conversions.
 pub trait SheetSource: Send + Sync {
     /// The tab names, in order.
     fn tab_names(&self) -> Vec<String>;
@@ -80,7 +77,11 @@ pub fn read_cell(wb: &Workbook, reference: &str) -> Option<CellRead> {
     };
     let t = wb.tab(tab)?;
     let cell = t.cell_at(pos);
-    Some(CellRead { tab, value: cell.value, format: wb.style_of(cell.style).num_fmt.clone() })
+    Some(CellRead {
+        tab,
+        value: cell.value,
+        format: wb.style_of(cell.style).num_fmt.clone(),
+    })
 }
 
 /// The top-left cell of `B2` or `B2:C9`.

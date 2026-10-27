@@ -4,8 +4,8 @@
 #   SCRIPT=dev; . "$(dirname "$0")/lib/common.sh"
 #
 # Everything a script starts runs detached in its own process group, with its log in $LOG_DIR/<name>.log and its
-# pid in $RUN_DIR/<name>.pid (plus <name>.match: what its command line must contain, so a recycled pid is never
-# stopped). stop_service only stops a pid whose command still matches.
+# pid in $RUN_DIR/<name>.pid, start time in <name>.started, and a legacy command match in <name>.match.
+# stop_service checks the process identity before sending a signal.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CALC_DEV="$ROOT/.dev"
@@ -82,38 +82,54 @@ launch() {
   set +m
   printf '%s\n' "$pid" >"$RUN_DIR/$name.pid"
   printf '%s\n' "$match" >"$RUN_DIR/$name.match"
+  ps -p "$pid" -o lstart= >"$RUN_DIR/$name.started" 2>/dev/null || true
   LAST_PID="$pid"
 }
 
 alive() { kill -0 "$1" 2>/dev/null; }
 
-# Is the service recorded as $RUN_DIR/<name>.pid still running (and still the same command)?
+# The process start time identifies the launched process even when Next.js changes its command title.
+# Older registrations fall back to matching the command.
 service_running() {
-  local name="$1" file pid expected cmd
+  local name="$1" file pid expected cmd started current
   file="$RUN_DIR/$name.pid"
   [ -f "$file" ] || return 1
   pid="$(tr -dc '0-9' <"$file")"
   [ -n "$pid" ] && alive "$pid" || return 1
+  started="$(cat "$RUN_DIR/$name.started" 2>/dev/null || true)"
+  if [ -n "$started" ]; then
+    current="$(ps -p "$pid" -o lstart= 2>/dev/null || true)"
+    [ "$started" = "$current" ]
+    return
+  fi
   expected="$(cat "$RUN_DIR/$name.match" 2>/dev/null || true)"
   cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
   [ -z "$expected" ] || case "$cmd" in *"$expected"*) return 0 ;; *) return 1 ;; esac
 }
 
-# stop_service <name> [grace seconds]: SIGTERM to the process group, SIGKILL after the grace period.
+# stop_service <name> [grace seconds] [first signal]: the first signal (default TERM; INT lets calc-api save its
+# open lines) to the process group, SIGKILL after the grace period.
 stop_service() {
-  local name="$1" grace="${2:-10}" file pid expected cmd waited
+  local name="$1" grace="${2:-10}" first="${3:-TERM}" file pid expected cmd waited started current
   file="$RUN_DIR/$name.pid"
   [ -f "$file" ] || return 0
   pid="$(tr -dc '0-9' <"$file")"
   expected="$(cat "$RUN_DIR/$name.match" 2>/dev/null || true)"
-  rm -f "$file" "$RUN_DIR/$name.match"
+  started="$(cat "$RUN_DIR/$name.started" 2>/dev/null || true)"
+  rm -f "$file" "$RUN_DIR/$name.match" "$RUN_DIR/$name.started"
   [ -n "$pid" ] || return 0
   if ! alive "$pid"; then
     [ "${QUIET:-0}" = 1 ] || say "$name (pid $pid) was not running"
     return 0
   fi
   cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
-  if [ -n "$expected" ]; then
+  if [ -n "$started" ]; then
+    current="$(ps -p "$pid" -o lstart= 2>/dev/null || true)"
+    if [ "$started" != "$current" ]; then
+      say "pid $pid has been reused; leaving it alone"
+      return 0
+    fi
+  elif [ -n "$expected" ]; then
     case "$cmd" in
       *"$expected"*) ;;
       *)
@@ -122,7 +138,7 @@ stop_service() {
         ;;
     esac
   fi
-  kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+  kill -"$first" -- "-$pid" 2>/dev/null || kill -"$first" "$pid" 2>/dev/null || true
   waited=0
   while alive "$pid" && [ "$waited" -lt $((grace * 5)) ]; do
     sleep 0.2
@@ -173,3 +189,31 @@ cargo_env() {
 
 # Free space on / in GB (integer).
 free_gb() { df -g / | awk 'NR==2 {print $4}'; }
+
+# newest_bin <path…>: prints the most recently built of the executables that exist (nothing when none does).
+newest_bin() {
+  local best="" best_t=0 f t
+  for f in "$@"; do
+    [ -x "$f" ] && [ -f "$f" ] || continue
+    t="$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0)"
+    if [ "$t" -gt "$best_t" ]; then
+      best="$f"
+      best_t="$t"
+    fi
+  done
+  [ -n "$best" ] && printf '%s' "$best"
+  return 0
+}
+
+# built_at <file>: when it was built, for messages ("2026-10-17 12:00").
+built_at() { date -r "$(stat -f %m "$1" 2>/dev/null || stat -c %Y "$1")" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "an unknown time"; }
+
+# The places calc-api and calc are built (docs/BUILDING.md: one target directory per work item).
+calc_api_candidates() {
+  local profile="$1" dir="$2"
+  printf '%s\n' "$dir/$profile/calc-api" "$ROOT/target/e2e/$profile/calc-api" "$ROOT/target/api/$profile/calc-api"
+}
+calc_cli_candidates() {
+  local profile="$1" dir="$2"
+  printf '%s\n' "$dir/$profile/calc" "$ROOT/target/e2e/$profile/calc" "$ROOT/target/cli/$profile/calc"
+}

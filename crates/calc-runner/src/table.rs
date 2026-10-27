@@ -1,7 +1,7 @@
 //! A tab, a range of one (`Sales!A1:C100`) or a defined name, read as a table: its first row names the columns,
 //! and each column gets the type its cells share (whole numbers, numbers, text, true/false, dates, times).
 //!
-//! This is what SQL queries, `calc.tab()` in Python and JavaScript, and Parquet downloads all see.
+//! This is the table representation used for trusted Parquet conversions.
 
 use std::{collections::HashSet, sync::Arc};
 
@@ -12,15 +12,17 @@ use calc_engine::{
 };
 use duckdb::arrow::{
     array::{
-        ArrayRef, BooleanBuilder, Date32Builder, Float64Builder, Int64Builder, StringBuilder, Time64MicrosecondBuilder,
-        TimestampMicrosecondBuilder,
+        ArrayRef, BooleanBuilder, Date32Builder, Float64Builder, Int64Builder, StringBuilder,
+        Time64MicrosecondBuilder, TimestampMicrosecondBuilder,
     },
     datatypes::{DataType, Field, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
 use serde::Serialize;
 
-use crate::values::{date_parts, day_micros_from_serial, unix_days_from_serial, unix_micros_from_serial};
+use crate::values::{
+    date_parts, day_micros_from_serial, unix_days_from_serial, unix_micros_from_serial,
+};
 
 /// The type a table column gets from its cells.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -111,7 +113,10 @@ pub fn resolve(wb: &Workbook, name: &str) -> Option<Source> {
         let rect = Rect::parse(rest, MAX_ROWS, MAX_COLS)?;
         return Some(Source::Range(t.id, rect));
     }
-    let def = wb.names.iter().find(|n| n.name.eq_ignore_ascii_case(name))?;
+    let def = wb
+        .names
+        .iter()
+        .find(|n| n.name.eq_ignore_ascii_case(name))?;
     let home = def.tab.or_else(|| wb.tabs.first().map(|t| t.id))?;
     let area = wb.resolve_area(def.text.trim_start_matches('='), home)?;
     wb.tab(area.tab)?;
@@ -175,8 +180,16 @@ pub fn column_names(raw: &[String]) -> Vec<String> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut out = Vec::with_capacity(raw.len());
     for (i, n) in raw.iter().enumerate() {
-        let clean: String = n.trim().chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
-        let base = if clean.is_empty() { format!("column{}", i + 1) } else { clean };
+        let clean: String = n
+            .trim()
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect();
+        let base = if clean.is_empty() {
+            format!("column{}", i + 1)
+        } else {
+            clean
+        };
         let mut name = base.clone();
         let mut k = 1;
         while seen.contains(&name.to_lowercase()) {
@@ -210,7 +223,10 @@ struct Formats<'a> {
 
 impl<'a> Formats<'a> {
     fn new(wb: &'a Workbook) -> Self {
-        Self { wb, cache: Default::default() }
+        Self {
+            wb,
+            cache: Default::default(),
+        }
     }
 
     /// `Some((date part, time part))` when the style formats numbers as dates or times.
@@ -264,7 +280,11 @@ pub fn build(wb: &Workbook, name: &str, source: &Source) -> Table {
         .collect();
     let names = column_names(&header);
     let first = area.r1 + 1;
-    let rows = if area.r2 >= first { (area.r2 - first + 1) as usize } else { 0 };
+    let rows = if area.r2 >= first {
+        (area.r2 - first + 1) as usize
+    } else {
+        0
+    };
     let row_ids: Vec<Option<u32>> = (0..rows as u32).map(|i| t.rows.id_at(first + i)).collect();
     let mut fields = Vec::with_capacity(names.len());
     let mut arrays: Vec<ArrayRef> = Vec::with_capacity(names.len());
@@ -276,7 +296,11 @@ pub fn build(wb: &Workbook, name: &str, source: &Source) -> Table {
             _ => Default::default(),
         };
         // First pass: what the column holds.
-        let mut s = Stats { integral: true, within_day: true, ..Default::default() };
+        let mut s = Stats {
+            integral: true,
+            within_day: true,
+            ..Default::default()
+        };
         for r in 0..rows {
             let cell = cell(r);
             match &cell.value {
@@ -339,7 +363,9 @@ pub fn build(wb: &Workbook, name: &str, source: &Source) -> Table {
                 let mut b = Date32Builder::with_capacity(rows);
                 for r in 0..rows {
                     match cell(r).value {
-                        Value::Number(n) => b.append_value(unix_days_from_serial(n).clamp(i32::MIN as i64, i32::MAX as i64) as i32),
+                        Value::Number(n) => b.append_value(
+                            unix_days_from_serial(n).clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+                        ),
                         _ => b.append_null(),
                     }
                 }
@@ -382,16 +408,30 @@ pub fn build(wb: &Workbook, name: &str, source: &Source) -> Table {
         arrays.push(array);
         types.push(ty);
     }
-    let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays).expect("columns match their fields");
-    Table { name: name.to_owned(), tab: tab_id, columns: names, types, batch }
+    let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays)
+        .expect("columns match their fields");
+    Table {
+        name: name.to_owned(),
+        tab: tab_id,
+        columns: names,
+        types,
+        batch,
+    }
 }
 
 /// A table with nothing in it: one text column, no rows (SQL tables need a column).
 fn empty_table(name: &str, tab: TabId) -> Table {
     let fields = vec![Field::new("column1", DataType::Utf8, true)];
     let arrays: Vec<ArrayRef> = vec![Arc::new(StringBuilder::new().finish())];
-    let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays).expect("one empty column");
-    Table { name: name.to_owned(), tab, columns: vec!["column1".into()], types: vec![ColumnType::Text], batch }
+    let batch =
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays).expect("one empty column");
+    Table {
+        name: name.to_owned(),
+        tab,
+        columns: vec!["column1".into()],
+        types: vec![ColumnType::Text],
+        batch,
+    }
 }
 
 #[cfg(test)]
@@ -401,6 +441,17 @@ mod tests {
     #[test]
     fn names() {
         let raw = ["region", "", "Amount", "amount", " total ", "", "column2"].map(String::from);
-        assert_eq!(column_names(&raw), vec!["region", "column2", "Amount", "amount_1", "total", "column6", "column2_1"]);
+        assert_eq!(
+            column_names(&raw),
+            vec![
+                "region",
+                "column2",
+                "Amount",
+                "amount_1",
+                "total",
+                "column6",
+                "column2_1"
+            ]
+        );
     }
 }

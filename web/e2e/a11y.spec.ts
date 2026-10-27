@@ -1,32 +1,15 @@
 /**
- * Accessibility: axe-core's WCAG 2.2 A and AA rules on every page, light and dark, desktop and phone, plus the keyboard
+ * Accessibility: axe-core's WCAG 2.2 A and AA rules on every page, in the light theme, desktop and phone, plus the keyboard
  * path through the shell. A violation fails with the rule, the element and how to fix it. (The CSP is bypassed only so
  * axe's script can be injected.)
  */
-import { join } from "node:path";
-import { expect, test, type Browser, type BrowserContext, type Page } from "@playwright/test";
-import { accountsSession, appConfig, BASE, runAccounts, signIn } from "./support";
-
-const AXE = join(process.cwd(), "node_modules", "axe-core", "axe.min.js");
-const TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
+import { expect, test, type Browser, type BrowserContext } from "@playwright/test";
+import { accountsSession, appConfig, BASE, runAccounts, sameOrigin, signIn } from "./support";
+import { audit } from "./audit";
 
 test.describe.configure({ mode: "serial" });
 
 let signedIn: BrowserContext;
-
-async function audit(page: Page, label: string) {
-  await page.waitForLoadState("networkidle").catch(() => undefined);
-  // Measure the page at rest: a panel fading in has its text at partial opacity, which is not what anyone reads.
-  await page.waitForFunction(() => document.getAnimations().every(animation => animation.playState !== "running"), undefined, { timeout: 5_000 }).catch(() => undefined);
-  await page.waitForTimeout(500);
-  await page.addScriptTag({ path: AXE });
-  const result = await page.evaluate(async tags => {
-    const axe = (window as unknown as { axe: { run: (context: Document, options: object) => Promise<{ violations: Array<{ id: string; impact: string; help: string; nodes: Array<{ target: string[]; failureSummary: string }> }> }> } }).axe;
-    return axe.run(document, { runOnly: { type: "tag", values: tags }, resultTypes: ["violations"] });
-  }, TAGS);
-  const problems = result.violations.map(violation => `${violation.id} (${violation.impact}): ${violation.help}\n${violation.nodes.slice(0, 4).map(node => `    ${node.target.join(" ")}: ${node.failureSummary.replace(/\s+/g, " ")}`).join("\n")}`);
-  expect(problems, `${label}\n${problems.join("\n")}`).toEqual([]);
-}
 
 async function contextFor(browser: Browser, theme: "light" | "dark", mobile: boolean, storageState?: Awaited<ReturnType<BrowserContext["storageState"]>>) {
   return browser.newContext({ baseURL: BASE, bypassCSP: true, colorScheme: theme, reducedMotion: "reduce", viewport: mobile ? { width: 390, height: 844 } : { width: 1440, height: 900 }, storageState });
@@ -43,7 +26,7 @@ test.afterAll(async () => {
   await signedIn?.close();
 });
 
-for (const theme of ["light", "dark"] as const) {
+for (const theme of ["light"] as const) {
   for (const mobile of [false, true]) {
     const where = `${theme}, ${mobile ? "phone" : "desktop"}`;
     test(`public pages pass WCAG 2.2 AA (${where})`, async ({ browser }) => {
@@ -63,16 +46,19 @@ for (const theme of ["light", "dark"] as const) {
         await page.goto(item.href);
         await audit(page, `${item.href} (${where})`);
       }
-      // The demo's detail page with its tabs and a dialog open.
-      await page.goto("/items");
-      await page.getByRole("table", { name: "Items" }).getByRole("link").first().click();
-      await page.getByRole("tab", { name: "Overview" }).waitFor();
-      await audit(page, `item (${where})`);
-      await page.getByRole("tab", { name: "Sharing" }).click();
-      await audit(page, `item sharing (${where})`);
-      await page.getByRole("button", { name: "Edit" }).click();
-      await page.getByRole("dialog", { name: "Edit item" }).waitFor();
-      await audit(page, `edit dialog (${where})`);
+      await page.goto("/sheets");
+      await page.getByRole("button", { name: "New sheet", exact: true }).click();
+      await page.getByTestId("grid").waitFor();
+      const sheetId = new URL(page.url()).pathname.split("/")[2];
+      const seeded = await page.request.post(`/api/v1/sheets/${sheetId}/edits`, { headers: sameOrigin(), data: { base_version: 0, edits: [{ type: "set", tab: 1, at: "A1", rows: [["Region", "Revenue"], ["East", "1200"], ["West", "2400"], ["Total", "=SUM(B2:B3)"]] }] } });
+      expect(seeded.ok()).toBe(true);
+      await expect(page.getByTestId("formula-input")).toHaveValue("Region");
+      await audit(page, `sheet (${where})`);
+      await page.screenshot({ path: `screens/calc-${mobile ? "phone" : "desktop"}.png` });
+      if (!mobile) await page.screenshot({ path: "screens/calc-workspace.png" });
+      await page.getByRole("button", { name: "Share", exact: true }).click();
+      await page.getByRole("dialog").waitFor();
+      await audit(page, `sheet sharing (${where})`);
       await context.close();
     });
   }

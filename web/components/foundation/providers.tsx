@@ -28,6 +28,12 @@ function ToastBridge() {
 export function Providers({ session, children }: { session: SessionView; children: ReactNode }) {
   const [client] = useState(createQueryClient);
 
+  useEffect(() => {
+    const refresh = () => { void client.invalidateQueries({ queryKey: ["sheets"] }); void client.invalidateQueries({ queryKey: ["folder"] }); };
+    window.addEventListener("calc:import-complete", refresh);
+    return () => window.removeEventListener("calc:import-complete", refresh);
+  }, [client]);
+
   // The keeper refreshes the sign-in ahead of expiry (lib/client/session.ts). A later render can hand it a newer expiry.
   useEffect(() => {
     startSessionKeeper(session);

@@ -26,14 +26,12 @@ pub struct Config {
     pub ting_url: Option<String>,
     /// `CALC_TING_APP_ID` (default `ting`): the receiving app of Calc's proof for Ting.
     pub ting_app_id: String,
-    /// `CALC_RUNNER_PYTHON`: the Python with pandas the code runner uses (default `python3`).
+    /// `CALC_RUNNER_PYTHON`: Python used by the trusted file converters (default `python3`).
     pub runner_python: String,
-    /// `CALC_RUNNER_NODE` (default `node`).
-    pub runner_node: String,
-    /// `CALC_CODE_SANDBOX`: `auto` (default), `macos`, `bwrap`, or `off` (local development only: code may reach
-    /// the network and the disk).
+    /// Trusted file-converter sandbox. `CALC_CODE_SANDBOX` is retained for environment compatibility:
+    /// `auto` (default), `macos`, `bwrap`, or `off` (local development only).
     pub code_sandbox: String,
-    /// `CALC_CODE_TIMEOUT_SECONDS` (default 60).
+    /// Trusted file-conversion timeout. Legacy `CALC_CODE_TIMEOUT_SECONDS` (default 60).
     pub code_timeout: Duration,
     /// `CALC_MAX_UPLOAD_BYTES` (default 500 MB).
     pub max_upload_bytes: usize,
@@ -86,7 +84,6 @@ impl Config {
             ting_url: var("CALC_TING_URL").map(|u| u.trim_end_matches('/').to_owned()),
             ting_app_id: var("CALC_TING_APP_ID").unwrap_or_else(|| "ting".into()),
             runner_python: var("CALC_RUNNER_PYTHON").unwrap_or_else(|| "python3".into()),
-            runner_node: var("CALC_RUNNER_NODE").unwrap_or_else(|| "node".into()),
             code_sandbox: var("CALC_CODE_SANDBOX").unwrap_or_else(|| "auto".into()),
             code_timeout: Duration::from_secs(secs("CALC_CODE_TIMEOUT_SECONDS", 60)?),
             max_upload_bytes: var("CALC_MAX_UPLOAD_BYTES").map(|v| v.parse().unwrap_or(500 << 20)).unwrap_or(500 << 20),
@@ -105,7 +102,7 @@ impl Config {
 
     /// The web app's link to a folder.
     pub fn folder_url(&self, folder_id: &str) -> String {
-        format!("{}/f/{folder_id}", self.web_url)
+        format!("{}/folders/{folder_id}", self.web_url)
     }
 
     /// The web app's link to one place in a sheet: a copy, a tab, a range, a comment thread (each optional).

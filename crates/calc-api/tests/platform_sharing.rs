@@ -45,7 +45,7 @@ async fn invites_by_id_and_email_and_tings_for_new_members() {
     assert_eq!(invites, vec!["carol@example.test", "nobody@else.test"]);
     assert_eq!(sharing["invites"][0]["role"], json!("commenter"));
     assert_eq!(sharing["invites"][0]["invited_by"]["id"], json!("c:ada"));
-    assert_eq!(sharing["public"], json!({"enabled": false, "access": "view"}));
+    assert_eq!(sharing["public"], json!({"enabled": false, "access": "view", "require_email": false}));
     assert_eq!(role_on(&h, &analyst, &s).await, Ok("commenter".into()));
 
     // Each new member hears about it once, with what they need to open it.
@@ -290,7 +290,7 @@ async fn public_links_signed_in_and_out() {
     let anon = h.get_anon(&path).await;
     let anon = expect(&anon, 200);
     assert_eq!(anon["role"], json!("viewer"));
-    assert_eq!(anon["public"], json!({"enabled": true, "access": "view"}));
+    assert_eq!(anon["public"], json!({"enabled": true, "access": "view", "require_email": false}));
     assert_eq!(anon["tabs"][0]["name"], json!("Tab 1"));
     let threads = h.get_anon(&format!("{path}/comments")).await;
     assert_eq!(expect(&threads, 200)["threads"], json!([]));

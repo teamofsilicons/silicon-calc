@@ -107,6 +107,7 @@ export class GridEngine {
   private editorShown = "";
   private mirrorText: string | null = null;
   private lastTab = -1;
+  private readonly tabScroll = new Map<number, { x: number; y: number }>();
   private viewListeners = new Set<() => void>();
   private commentCells = new Set<number>();
   private disposers: Array<() => void> = [];
@@ -189,9 +190,18 @@ export class GridEngine {
     this.disposers.push(this.controller.subscribe(() => this.onControllerChange()));
     this.disposers.push(this.controller.session.subscribe(() => this.schedule()));
     if (typeof document !== "undefined" && document.fonts) {
-      void document.fonts.ready.then(() => {
+      let active = true;
+      const redrawWithFonts = () => {
+        if (!active) return;
         clearMeasureCache();
         this.schedule();
+      };
+      void document.fonts.ready.then(redrawWithFonts);
+      // A font can begin loading after mount, including a face used by imported cell formatting.
+      document.fonts.addEventListener("loadingdone", redrawWithFonts);
+      this.disposers.push(() => {
+        active = false;
+        document.fonts.removeEventListener("loadingdone", redrawWithFonts);
       });
     }
     this.controller.reveal = (row, col) => this.reveal(row, col);
@@ -370,10 +380,7 @@ export class GridEngine {
     const data = this.data;
     const ctx = this.el.canvas.getContext("2d");
     if (!ctx || !data || this.width === 0 || this.height === 0) return;
-    if (this.lastTab !== this.controller.activeTab) {
-      this.lastTab = this.controller.activeTab;
-      this.updateSpacer();
-    }
+    this.restoreTabView();
     const layout = this.layout();
     const view = this.view();
     const controller = this.controller;
@@ -456,8 +463,22 @@ export class GridEngine {
   /* ---- the in-cell editor -------------------------------------------------------------------------------------- */
 
   private onControllerChange(): void {
+    this.restoreTabView();
     this.syncEditor();
     this.schedule();
+  }
+
+  /** Restore before painting or revealing a cell, using this tab's scroll geometry. */
+  private restoreTabView(): void {
+    const tab = this.controller.activeTab;
+    if (this.lastTab === tab) return;
+    if (this.lastTab !== -1) this.tabScroll.set(this.lastTab, { x: this.scrollX, y: this.scrollY });
+    for (const id of this.tabScroll.keys()) if (!this.controller.session.tab(id)) this.tabScroll.delete(id);
+    this.lastTab = tab;
+    this.updateSpacer();
+    const saved = this.tabScroll.get(tab);
+    this.scrollTo(saved?.x ?? 0, saved?.y ?? 0);
+    this.setHover(null);
   }
 
   /** Puts the controller's editor state into the textarea (text, caret) when it changed elsewhere. */
@@ -1038,6 +1059,10 @@ export class GridEngine {
         if (shift) {
           event.preventDefault();
           this.selectRowsOfSelection();
+          return;
+        }
+        if (!event.altKey && controller.toggleCheckbox()) {
+          event.preventDefault();
           return;
         }
         break;

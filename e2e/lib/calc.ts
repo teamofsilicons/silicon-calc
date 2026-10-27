@@ -227,7 +227,7 @@ export interface Tab {
   rows: number;
   cols: number;
   used: string | null;
-  code: null | { language: string; code: string; inputs: number[]; run_by: Account; run_at: string; keep_updated: boolean };
+  code: null | { language: string; code: string; inputs: number[]; run_by: Account; run_at: string };
   [k: string]: unknown;
 }
 

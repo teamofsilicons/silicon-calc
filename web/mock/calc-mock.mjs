@@ -704,9 +704,9 @@ function applyEdits(line, me, body) {
             let row = keyRow(k);
             let col = keyCol(k);
             const pos = rowsAxis ? row : col;
-            if (insert && pos >= edit.at) rowsAxis ? (row += edit.count) : (col += edit.count);
+            if (insert && pos >= edit.at) { if (rowsAxis) row += edit.count; else col += edit.count; }
             if (!insert && pos >= edit.at && pos < edit.at + edit.count) continue;
-            if (!insert && pos >= edit.at + edit.count) rowsAxis ? (row -= edit.count) : (col -= edit.count);
+            if (!insert && pos >= edit.at + edit.count) { if (rowsAxis) row -= edit.count; else col -= edit.count; }
             moved.set(key(row, col), cell);
           }
           tab.cells = moved;
@@ -811,8 +811,8 @@ function applyEdits(line, me, body) {
           const tab = wb.tab(edit.tab);
           const r = parseRange(edit.type === "col_width" ? edit.cols : edit.rows);
           const size = edit.type === "col_width" ? edit.width : edit.height;
-          if (edit.type === "col_width") for (let c = r.c1; c <= r.c2; c++) size === null ? tab.colWidths.delete(c) : tab.colWidths.set(c, size);
-          else for (let row = r.r1; row <= r.r2; row++) size === null ? tab.rowHeights.delete(row) : tab.rowHeights.set(row, size);
+          if (edit.type === "col_width") for (let c = r.c1; c <= r.c2; c++) { if (size === null) tab.colWidths.delete(c); else tab.colWidths.set(c, size); }
+          else for (let row = r.r1; row <= r.r2; row++) { if (size === null) tab.rowHeights.delete(row); else tab.rowHeights.set(row, size); }
           changes.push({ tab: tab.id, reload: true });
           undoable = false;
           break;
@@ -822,7 +822,7 @@ function applyEdits(line, me, body) {
           const r = parseRange(edit.range);
           const set = edit.type.endsWith("rows") ? tab.hiddenRows : tab.hiddenCols;
           const [a, b] = edit.type.endsWith("rows") ? [r.r1, r.r2] : [r.c1, r.c2];
-          for (let i = a; i <= Math.min(b, a + 100_000); i++) edit.type.startsWith("hide") ? set.add(i) : set.delete(i);
+          for (let i = a; i <= Math.min(b, a + 100_000); i++) { if (edit.type.startsWith("hide")) set.add(i); else set.delete(i); }
           changes.push({ tab: tab.id, reload: true });
           undoable = false;
           break;
@@ -1123,7 +1123,7 @@ const route = (method, pattern, handler) => routes.push({ method, pattern: new R
 const LINE = "/v1/sheets/([a-z0-9]+)(?:/copies/(c[a-z0-9]+))?";
 
 route("GET", "/healthz", () => "ok");
-route("GET", "/v1/meta", () => ({ app_id: "calc", version: "0.1.0-mock", accounts_url: "http://localhost:9990", limits: { max_rows: MAX_ROWS, max_cols: MAX_COLS, max_upload_bytes: 524288000, max_cells_per_edit: 200000, code_timeout_seconds: 60 } }));
+route("GET", "/v1/meta", () => ({ app_id: "calc", version: "0.1.0-mock", accounts_url: "http://localhost:9990", limits: { max_rows: MAX_ROWS, max_cols: MAX_COLS, max_upload_bytes: 524288000, max_cells_per_edit: 200000, browser_command_timeout_seconds: 60, conversion_timeout_seconds: 60 } }));
 route("GET", "/v1/me", ({ me }) => ({ account: me }));
 route("GET", "/v1/accounts/lookup", ({ url }) => {
   const found = lookupAccount(url.searchParams.get("id") ?? "");
@@ -1145,6 +1145,9 @@ route("GET", "/v1/sheets", ({ me, url }) => {
   } else if (scope === "shared") {
     list = all.filter(s => s.owner.uuid !== me.uuid && !s.trashed_at);
     folderList = [...folders.values()].filter(f => f.owner.uuid !== me.uuid && f.members.has(me.uuid) && !f.trashed_at);
+  } else if (scope === "all" && !folder) {
+    list = all.filter(s => !s.trashed_at && (s.owner.uuid === me.uuid ? (q || !s.folder_id) : s.members.has(me.uuid)));
+    folderList = [...folders.values()].filter(f => !f.trashed_at && (f.owner.uuid === me.uuid ? (q || !f.parent_id) : f.members.has(me.uuid)));
   } else {
     list = all.filter(s => s.owner.uuid === me.uuid && !s.trashed_at && (folder ? s.folder_id === folder : !s.folder_id));
     folderList = [...folders.values()].filter(f => f.owner.uuid === me.uuid && !f.trashed_at && (folder ? f.parent_id === folder : !f.parent_id));
@@ -1162,6 +1165,7 @@ route("POST", "/v1/sheets/import", ({ me, url, raw }) => {
   const sheet = makeSheet(me, url.searchParams.get("title") || filename.replace(/\.[^.]+$/, ""), url.searchParams.get("folder_id") || null);
   fillTabFrom(sheet.main.wb.tabs[0], filename, raw, me);
   sheet.main.wb.tabs[0].name = filename.replace(/\.[^.]+$/, "").slice(0, 60) || "Tab 1";
+  sheet.main.snapshots.set(0, sheet.main.wb.clone());
   return [201, sheetJson(sheet, me, true)];
 });
 route("GET", "/v1/sheets/([a-z0-9]+)", ({ me, m }) => {
@@ -1322,11 +1326,7 @@ route("GET", `${LINE}/tabs`, ({ me, m }) => {
   const line = lineFor(m[1], m[2], me);
   return { version: line.version, tabs: line.wb.tabs.map((t, i) => t.json(i)) };
 });
-route("GET", `${LINE}/tabs/([^/]+)/cells`, ({ me, m, url }) => {
-  const line = lineFor(m[1], m[2], me);
-  const tab = line.wb.tab(decodeURIComponent(m[3]));
-  const answer = cellsAnswer(line, tab, url.searchParams.get("range"));
-  if (url.searchParams.get("format") === "values") {
+function valuesAnswer(line, tab, answer) {
     const r = parseRange(answer.range);
     const values = [];
     for (let row = r.r1; row <= Math.min(r.r2, r.r1 + 100_000); row++) {
@@ -1339,7 +1339,12 @@ route("GET", `${LINE}/tabs/([^/]+)/cells`, ({ me, m, url }) => {
       values.push(line2);
     }
     return { version: line.version, range: answer.range, values };
-  }
+}
+route("GET", `${LINE}/tabs/([^/]+)/cells`, ({ me, m, url }) => {
+  const line = lineFor(m[1], m[2], me);
+  const tab = line.wb.tab(decodeURIComponent(m[3]));
+  const answer = cellsAnswer(line, tab, url.searchParams.get("range"));
+  if (url.searchParams.get("format") === "values") return valuesAnswer(line, tab, answer);
   return answer;
 });
 route("GET", `${LINE}/tabs/([^/]+)/cells/([A-Za-z]+[0-9]+)`, ({ me, m }) => {
@@ -1396,7 +1401,9 @@ route("GET", `${LINE}/versions/(\\d+)/tabs`, ({ me, m }) => {
 });
 route("GET", `${LINE}/versions/(\\d+)/tabs/([^/]+)/cells`, ({ me, m, url }) => {
   const line = atVersion(lineFor(m[1], m[2], me), Number(m[3]));
-  return cellsAnswer(line, line.wb.tab(decodeURIComponent(m[4])), url.searchParams.get("range"));
+  const tab = line.wb.tab(decodeURIComponent(m[4]));
+  const answer = cellsAnswer(line, tab, url.searchParams.get("range"));
+  return url.searchParams.get("format") === "values" ? valuesAnswer(line, tab, answer) : answer;
 });
 route("GET", `${LINE}/compare`, ({ me, m, url }) => {
   const line = lineFor(m[1], m[2], me);
@@ -1584,55 +1591,18 @@ route("DELETE", "/v1/comments/([^/]+)/reactions/([^/]+)", ({ me, m }) => {
 
 route("POST", `${LINE}/run`, ({ me, m, body }) => {
   const line = lineFor(m[1], m[2], me, "editor");
-  const started = Date.now();
-  const named = /from\s+("([^"]+)"|'([^']+)'|([\w.]+))/i.exec(body.code ?? "");
-  const tabName = named ? named[2] ?? named[3] ?? named[4] : line.wb.tabs[0].name;
-  let tab;
-  try {
-    tab = line.wb.tab(tabName);
-  } catch {
-    throw new Fail(422, "code_failed", `The code names a table "${tabName}" this sheet has no tab for.`, "Use a tab's name; quote names with spaces.", { stderr: `Catalog Error: Table with name ${tabName} does not exist!`, line: 1 });
-  }
-  const used = tab.used();
-  const grid = [];
-  for (let row = 0; row <= Math.min(used?.r2 ?? -1, 1000); row++) {
-    const out = [];
-    for (let col = 0; col <= (used?.c2 ?? -1); col++) {
-      const cell = tab.get(row, col);
-      const v = cell ? (cell.f ? evaluate(line.wb, tab, cell.f) : cell.v) : { t: "empty" };
-      out.push(v.t === "empty" ? null : v.v);
-    }
-    grid.push(out);
-  }
-  const columns = (grid[0] ?? []).map((v, i) => (v === null ? `column${i + 1}` : String(v)));
-  const rows = grid.slice(1);
-  let version = null;
-  let made = null;
-  if (body.into?.new_tab) {
-    const target = line.wb.addTab(body.into.new_tab);
-    [columns, ...rows].forEach((row, r) => row.forEach((value, c) => {
-      if (value !== null) target.cells.set(key(r, c), { v: typeof value === "number" ? { t: "number", v: value } : { t: "text", v: String(value) }, by: me.uuid, at: now() });
-    }));
-    target.code = { language: body.language, code: body.code, inputs: [tab.id], run_by: me, run_at: now(), keep_updated: !!body.keep_updated };
-    version = finish(line, me, [{ tabs: true }, { tab: target.id, reload: true }], [], new Map(), null, "code").version;
-    made = target.json(line.wb.tabs.indexOf(target));
-  }
-  return { columns, rows: rows.slice(0, 1000), row_count: rows.length, truncated: rows.length > 1000, stdout: "", stderr: "", duration_ms: Date.now() - started, version, tab: made };
-});
-route("PATCH", `${LINE}/tabs/([^/]+)/code`, ({ me, m, body }) => {
-  const line = lineFor(m[1], m[2], me, "editor");
-  const tab = line.wb.tab(decodeURIComponent(m[3]));
-  if (!tab.code) throw new Fail(409, "conflict", "This tab was not made by code.", "Run code into a new tab first.");
-  tab.code.keep_updated = !!body.keep_updated;
-  return tab.json(line.wb.tabs.indexOf(tab));
-});
-route("POST", `${LINE}/tabs/([^/]+)/rerun`, ({ me, m }) => {
-  const line = lineFor(m[1], m[2], me, "editor");
-  const tab = line.wb.tab(decodeURIComponent(m[3]));
-  if (!tab.code) throw new Fail(409, "conflict", "This tab was not made by code.", "Run code into a new tab first.");
-  tab.code.run_at = now();
-  tab.code.run_by = me;
-  return { columns: [], rows: [], row_count: 0, truncated: false, stdout: "", stderr: "", duration_ms: 1, version: line.version, tab: tab.json(line.wb.tabs.indexOf(tab)) };
+  if (body.base_version !== line.version) throw new Fail(409, "conflict", "The sheet changed while the command ran.", "Run the command again.");
+  const { columns, rows } = body;
+  if (!Array.isArray(columns) || !Array.isArray(rows) || !body.into) throw new Fail(422, "invalid_result", "Send a result table and destination.", "Run JavaScript in the browser first.");
+  const target = body.into.new_tab ? line.wb.addTab(body.into.new_tab) : line.wb.tab(String(body.into.tab));
+  const at = parseRange(body.into.at || "A1");
+  if (body.into.replace) target.cells.clear();
+  [columns, ...rows].forEach((row, r) => row.forEach((value, c) => {
+    if (value !== null) target.cells.set(key(at.r1 + r, at.c1 + c), { v: typeof value === "number" ? { t: "number", v: value } : typeof value === "boolean" ? { t: "bool", v: value } : { t: "text", v: String(value) }, by: me.uuid, at: now() });
+  }));
+  target.code = { language: "javascript", code: body.code, inputs: body.inputs, run_by: me, run_at: now() };
+  const version = finish(line, me, [{ tabs: true }, { tab: target.id, reload: true }], [], new Map(), null, "code").version;
+  return { columns, rows: rows.slice(0, 1000), row_count: rows.length, truncated: rows.length > 1000, stdout: "", stderr: "", duration_ms: 0, version, tab: target.json(line.wb.tabs.indexOf(target)) };
 });
 route("POST", `${LINE}/tabs/import`, ({ me, m, url, raw }) => {
   const line = lineFor(m[1], m[2], me, "editor");

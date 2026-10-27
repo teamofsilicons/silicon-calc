@@ -12,11 +12,11 @@
 .reserve { visibility: hidden; }
 .sizer { position: absolute; top: 0; left: 0; white-space: nowrap; visibility: hidden; pointer-events: none; }
 .srOnly { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-.language { flex: none; color: var(--text-muted); font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size: var(--text-xs); font-weight: 400; }
+.language { flex: none; color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-xs); font-weight: 400; }
 .language::before { content: "·"; margin-right: var(--space-related); color: var(--border-strong); }
 /* The source area follows its content height on a spring. Before it measures, a collapsed block clips from CSS. */
 .viewport { --code-collapsed: calc(var(--code-lines, 0) * var(--text-sm) * 1.7 + var(--space-comfort) * 2); overflow: hidden; }
-.pre { position: relative; overflow: auto; margin: 0; padding: var(--space-comfort); color: var(--foreground); font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace; font-size: var(--text-sm); font-variant-ligatures: none; line-height: 1.7; tab-size: 2; white-space: pre; }
+.pre { position: relative; overflow: auto; margin: 0; padding: var(--space-comfort); color: var(--foreground); font-family: var(--font-mono); font-size: var(--text-sm); font-variant-ligatures: none; line-height: 1.7; tab-size: 2; white-space: pre; }
 /* Block so new source can rise in with a transform; inline code ignores transforms. */
 .code { display: block; }
 .expand { display: flex; width: 100%; min-height: 44px; align-items: center; justify-content: center; gap: var(--space-related); border: 0; border-top: 1px solid var(--border-subtle); padding: 0 var(--space-inset); background: var(--surface-raised); color: var(--text-secondary); font: inherit; font-size: var(--text-sm); font-weight: 500; cursor: pointer; transition: color var(--duration-fast) var(--ease-standard), background-color var(--duration-fast) var(--ease-standard); }

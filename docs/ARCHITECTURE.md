@@ -6,11 +6,12 @@
 
 | Path | What |
 | --- | --- |
-| `crates/calc-engine` | The spreadsheet itself, no I/O: workbook model, cell storage, formulas (parser, evaluator, functions, recalculation), number formats, operations and their inverses, diff and three-way merge, snapshots, every file format. |
-| `crates/calc-api` | The service (`calc-api` binary): Postgres, blob storage, Silicon Accounts sign-in, sharing, comments, versions, copies, live editing over WebSocket, SQL (DuckDB), Python and JavaScript runs, Ting. |
+| `crates/calc-engine` | The spreadsheet itself, no I/O: workbook model, cell storage, formulas (parser, evaluator, functions, recalculation), number formats, operations and their inverses, diff and three-way merge, snapshots, CSV/TSV/JSON/XLSX codecs and the legacy XLS reader. |
+| `crates/calc-api` | The service (`calc-api` binary): Postgres, blob storage, Silicon Accounts sign-in, sharing, comments, versions, copies, live editing over SSE, command result and conversion routes, Ting. |
+| `crates/calc-runner` | Trusted Parquet conversions through DuckDB, sandboxed file converters, LibreOffice and optional native Numbers conversion. |
 | `crates/silicon-calc-client` | The Rust client for the service's HTTP API (used by the CLI and tests). |
 | `crates/calc-cli` | The `calc` command line. |
-| `runner/` | The code runner's helper modules (`calc.py`, `calc.mjs`) and its Python requirements. |
+| `runner/` | Fixed file conversion programs and their Python requirements. |
 | `web/` | The web app (Next.js, from the Silicon web kit, Silicon UI components, light only). |
 | `e2e/` | End-to-end: a local Silicon Accounts stack, a stand-in Ting, journeys for Carbons (browser) and Silicons (CLI). |
 | `scripts/` | `dev.sh`, `stop.sh`, `e2e.sh`. |
@@ -54,28 +55,59 @@ recursion, so a chain a million cells long is fine), detecting cycles.
 - Versions shown to people are runs of operations by the same account close together in time, plus named
   versions. "Undo everything X changed since version V" rebuilds the state at V, replays every later operation
   except X's, and applies the difference to the current state as one new operation, so it is itself undoable.
-- Comparing two versions or a copy with its parent is a cell-level diff. Merging a copy is a three-way merge at
-  the fork point: cells changed only in the copy are taken, cells changed on both sides differently are
-  conflicts the merger chooses between; merging "in part" takes only chosen tabs or ranges.
+- Comparing versions is a cell-level diff. A copy's first compare and three-way merge use its parent's state
+  at the fork as the baseline. Each accepted merge saves a receipt: the accepted source snapshot, stable-id
+  maps from the copy's tabs/rows/columns to the parent's, and the accepted parent version. Later compares and
+  merges use that receipt, so already accepted changes are not offered again; the original fork stays in history.
+- A partial merge advances only the selected tabs or range in the accepted-source baseline. Choosing the
+  parent's value for a conflict also consumes that source change, even though the parent cell stays unchanged.
+  Unselected source changes remain available for a later merge. The parent operation and receipt update commit
+  together, checking the expected parent version, source head and receipt revision; a concurrent edit or merge
+  returns a conflict for the caller to compare and retry.
 
 ## Live editing
 
 Each open line is owned by one in-memory actor in the service (a tokio task) that applies operations in order,
-persists them, recalculates and broadcasts the changes to every WebSocket subscriber of that line. Clients send
-operations with the version they were looking at. If an operation overwrites a cell someone else changed after
+persists them, recalculates and broadcasts changes over Server-Sent Events (SSE) at `GET {line}/events`.
+Clients send edits and presence through HTTP requests. A reconnect uses `since` or `Last-Event-ID` to replay up to
+1,000 saved changes; a `reset` asks the client to reload when it is further behind or misses buffered events.
+Comment, copy and presence events are live; only workbook changes are replayed. Clients send operations with
+the version they were looking at. If an operation overwrites a cell someone else changed after
 that version, it is applied and the overwrite is reported to both sides with the earlier value (kept in
 history), so no change silently replaces another. Idle lines are evicted after a snapshot.
 
-## Code
+## Browser commands
 
-- **SQL** runs in DuckDB inside the service. The tabs a query names are loaded as tables (first row = column
-  names, types inferred per column), cached per tab version.
-- **Python** and **JavaScript** run in a separate process per run, inside a sandbox with no network and no file
-  access outside its own scratch directory (macOS `sandbox-exec`; Linux `bwrap`), with time and memory limits.
-  The tabs they read are handed over as Parquet (Python: pandas DataFrames through `calc.tab()`) or JSON (JS:
-  `calc.tab()` gives rows), and what they return or `calc.write()`s comes back the same way.
-- A tab made by code stores the code, the language, the inputs and who ran it. When "keep updated" is on, a
-  change to any input tab reruns it (debounced) as the account who set it up.
+JavaScript commands execute in a browser worker. Input metadata and cells come from one captured sheet
+version; previews remain in the browser. Saving sends the source metadata, input tab IDs, scalar result rows
+and that version to `POST {line}/run`. The service never evaluates source. It validates dimensions and size,
+checks edit permission and protections, and atomically rejects a commit when the line version has changed.
+Strings remain literal cell values, including leading `=` text.
+
+A new command tab or replacement retains JavaScript source, inputs and the account that saved it. Rerunning
+uses the browser worker again with a fresh snapshot. There are no server language runtimes or background
+reruns. Historical code metadata remains readable; it cannot start execution. DuckDB and Python are internal
+file conversion dependencies only.
+
+## Files and conversion boundaries
+
+The service spools uploads to private files before parsing. Parsing and conversion run on blocking threads;
+imports currently read the uploaded bytes into memory and exports build the output bytes before the HTTP
+response. The synchronous import endpoint records an import operation at version 1. Durable imports create a new workbook at version 0, or record one import operation when adding tabs to an existing line. Imported cell notes become anchored
+comment threads, retaining the file author's name in the comment text.
+
+CSV, TSV, JSON and XLSX use engine codecs. Parquet uses a fresh in-process DuckDB database per conversion,
+with internally generated queries and paths; no database is shared between conversions. XLS and ODS imports convert to XLSX through
+LibreOffice; XLS, ODS and PDF exports convert from engine-produced XLSX. LibreOffice uses a fresh profile,
+disabled macros and link updates, OS sandboxing and runner resource limits. Its trusted converter profile
+allows local UNIX IPC; IP network access remains denied.
+
+Numbers defaults to sandboxed `numbers-parser`. Its writer supports values and some styles, and refuses
+formula exports instead of silently flattening them. On a local macOS desktop,
+`CALC_RUNNER_NUMBERS_ENABLE=1` opts into a fixed AppleScript bridge through installed Apple Numbers and XLSX.
+That native app may activate and uses its own permissions: it is outside the runner's filesystem sandbox,
+process group and memory limits, and an app operation may continue after the launcher times out. This mode is
+unsuitable for an exposed or unattended service. See [`runner/README.md`](../runner/README.md) for setup.
 
 ## Accounts, sharing, Ting
 
@@ -86,3 +118,14 @@ history), so no change silently replaces another. Idle lines are evicted after a
 - Notifications are written to an outbox table in the same transaction as their cause, and a worker sends them
   to Silicon Ting over its v1 WebSocket with Calc's App verification proof (receiving app `ting`, scope
   `tings.send`). Without `CALC_TING_URL` they are kept and marked as not sent.
+- The signed-in account's Notifications setting reads its current Ting grant. Only an explicit Enable action
+  issues a User verification proof from that caller's token and registers the recipient; Disable revokes only
+  that caller's Calc grant. These actions never enable required delivery or change mute preferences. Failed
+  upstream checks remain errors rather than an assumed opt-in state. Calc's author registers its six types in Ting.
+
+
+### Persistent imports
+
+`import_jobs` and `import_chunks` own the browser import lifecycle. The browser saves source Blobs in account-scoped IndexedDB and sends immutable, idempotent 1 MiB chunks. A root-layout panel survives workspace/editor navigation and never navigates on completion. Server processing starts only when every chunk has arrived; it needs no browser or retained bearer token. Permissions are checked at submission and again before applying results.
+
+A PostgreSQL advisory lock serializes import workers. Its dedicated connection closes when the task/process exits, allowing another worker to recover a `processing` job. New-sheet creation, notes, and completion receipt share a transaction. Existing-line imports use the line actor's transaction hook to commit data, notes, and receipt together. Replaying requests or restarting between completion and source cleanup cannot apply an import twice. Network/server failures retry; conversion errors remain retryable. The global progress panel shows active jobs and completed/failed results for two minutes from the server's saved update time, then hides without deleting the receipts. Source chunks use normal content-addressed blob storage and are covered by the existing database/blob backups and reference-aware garbage collector.

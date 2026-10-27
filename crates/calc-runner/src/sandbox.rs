@@ -1,4 +1,4 @@
-//! Running a child process (Python, Node) inside a sandbox, with limits, talking to it over two pipes.
+//! Running a child process (trusted converters) inside a sandbox, with limits, talking to it over two pipes.
 //!
 //! - **macOS**: `sandbox-exec` with a profile that denies everything except reading the system's libraries, the
 //!   interpreter's own files and the run's scratch folder, and writing in the scratch folder. No network, no
@@ -23,10 +23,7 @@ use std::{
     },
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{
-        Arc, Mutex, Once,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Arc, Mutex, Once},
     thread,
     time::{Duration, Instant},
 };
@@ -52,7 +49,7 @@ impl Kind {
             SandboxMode::Off => {
                 OFF_WARNING.call_once(|| {
                     tracing::warn!(
-                        "CALC_CODE_SANDBOX=off: Python and JavaScript run without a sandbox and can reach the network and \
+                        "CALC_CODE_SANDBOX=off: File converters run without a sandbox and can reach the network and \
                          the disk. Use this for local development only."
                     )
                 });
@@ -67,7 +64,7 @@ impl Kind {
                     Self::Bwrap(find_bwrap().ok_or_else(no_bwrap)?)
                 } else {
                     return Err(RunError::unavailable(
-                        "Python and JavaScript can't run here: Silicon Calc sandboxes them with sandbox-exec (macOS) or bwrap (Linux), and this system has neither.",
+                        "File converters can't run here: Silicon Calc sandboxes them with sandbox-exec (macOS) or bwrap (Linux), and this system has neither.",
                         "Run the service on macOS or Linux (with bubblewrap installed).",
                     ));
                 }
@@ -87,20 +84,37 @@ impl Kind {
 
     /// Starts `/usr/bin/true` (or `/bin/true`) in the sandbox, so a sandbox that can't work here says so at once.
     fn self_test(&self) -> Result<(), RunError> {
-        let truth = ["/usr/bin/true", "/bin/true"].into_iter().map(Path::new).find(|p| p.exists());
+        let truth = ["/usr/bin/true", "/bin/true"]
+            .into_iter()
+            .map(Path::new)
+            .find(|p| p.exists());
         let Some(truth) = truth else { return Ok(()) };
         let out = match self {
             Self::MacOs => {
                 if !Path::new(SANDBOX_EXEC).exists() {
                     return Err(RunError::unavailable(
-                        format!("Python and JavaScript can't run here: {SANDBOX_EXEC}, which sandboxes them on macOS, is missing."),
+                        format!(
+                            "File converters can't run here: {SANDBOX_EXEC}, which sandboxes them on macOS, is missing."
+                        ),
                         "Run the service on a standard macOS, or on Linux with bubblewrap installed.",
                     ));
                 }
-                Command::new(SANDBOX_EXEC).arg("-p").arg("(version 1)(allow default)").arg(truth).env_clear().output()
+                Command::new(SANDBOX_EXEC)
+                    .arg("-p")
+                    .arg("(version 1)(allow default)")
+                    .arg(truth)
+                    .env_clear()
+                    .output()
             }
             Self::Bwrap(bwrap) => Command::new(bwrap)
-                .args(["--die-with-parent", "--unshare-all", "--ro-bind", "/", "/", "--"])
+                .args([
+                    "--die-with-parent",
+                    "--unshare-all",
+                    "--ro-bind",
+                    "/",
+                    "/",
+                    "--",
+                ])
                 .arg(truth)
                 .env_clear()
                 .output(),
@@ -110,14 +124,17 @@ impl Kind {
             Ok(o) if o.status.success() => Ok(()),
             Ok(o) => Err(RunError::unavailable(
                 format!(
-                    "Python and JavaScript can't run here: the {} sandbox doesn't start ({}).",
+                    "File converters can't run here: the {} sandbox doesn't start ({}).",
                     self.name(),
                     String::from_utf8_lossy(&o.stderr).trim()
                 ),
-                "On Linux, bwrap needs unprivileged user namespaces (or a setuid bwrap). For local development only, CALC_CODE_SANDBOX=off runs code without a sandbox.",
+                "On Linux, bwrap needs unprivileged user namespaces (or a setuid bwrap). For local development only, CALC_CODE_SANDBOX=off runs converters without a sandbox.",
             )),
             Err(e) => Err(RunError::unavailable(
-                format!("Python and JavaScript can't run here: the {} sandbox can't be started ({e}).", self.name()),
+                format!(
+                    "File converters can't run here: the {} sandbox can't be started ({e}).",
+                    self.name()
+                ),
                 "Install it, or for local development only set CALC_CODE_SANDBOX=off.",
             )),
         }
@@ -134,7 +151,7 @@ fn find_bwrap() -> Option<PathBuf> {
 
 fn no_bwrap() -> RunError {
     RunError::unavailable(
-        "Python and JavaScript can't run here: bwrap (bubblewrap), which sandboxes them on Linux, isn't installed.",
+        "File converters can't run here: bwrap (bubblewrap), which sandboxes them on Linux, isn't installed.",
         "Install bubblewrap (apt install bubblewrap), then try again.",
     )
 }
@@ -151,8 +168,10 @@ pub(crate) struct Spawn<'a> {
     /// The paths the child may be started as.
     pub exec: Vec<PathBuf>,
     pub limits: &'a Limits,
-    /// Bound the address space too (Linux, Python; Node reserves far more address space than it uses).
+    /// Bound Python converter address space on Linux.
     pub address_space: bool,
+    /// Trusted desktop file converters need system services; arbitrary code never gets these permissions.
+    pub desktop_converter: bool,
 }
 
 /// Why the watchdog stopped a child.
@@ -171,7 +190,6 @@ pub(crate) struct Finished {
     pub stop: Option<Stop>,
     pub stdout: String,
     pub stderr: String,
-    pub peak_memory: u64,
 }
 
 impl Finished {
@@ -184,18 +202,28 @@ impl Finished {
 const MAX_REQUEST: usize = 16 << 20;
 
 /// Starts the child, answers its requests with `serve` until it closes its end or exits, and waits for it.
-pub(crate) fn run(kind: &Kind, spawn: &Spawn<'_>, serve: &mut dyn FnMut(&[u8]) -> Vec<u8>) -> Result<Finished, RunError> {
+pub(crate) fn run(
+    kind: &Kind,
+    spawn: &Spawn<'_>,
+    serve: &mut dyn FnMut(&[u8]) -> Vec<u8>,
+) -> Result<Finished, RunError> {
     let (req_r, req_w) = pipe()?;
     let (resp_r, resp_w) = pipe()?;
     let mut cmd = match kind {
         Kind::MacOs => {
             let mut c = Command::new(SANDBOX_EXEC);
-            c.arg("-p").arg(macos_profile(spawn)).arg(&spawn.program).args(&spawn.args);
+            c.arg("-p")
+                .arg(macos_profile(spawn))
+                .arg(&spawn.program)
+                .args(&spawn.args);
             c
         }
         Kind::Bwrap(bwrap) => {
             let mut c = Command::new(bwrap);
-            c.args(bwrap_args(spawn)).arg("--").arg(&spawn.program).args(&spawn.args);
+            c.args(bwrap_args(spawn))
+                .arg("--")
+                .arg(&spawn.program)
+                .args(&spawn.args);
             c
         }
         Kind::Off => {
@@ -214,7 +242,8 @@ pub(crate) fn run(kind: &Kind, spawn: &Spawn<'_>, serve: &mut dyn FnMut(&[u8]) -
     let (child_req, child_resp) = (req_w.as_raw_fd(), resp_r.as_raw_fd());
     let limits = ChildLimits {
         file_bytes: spawn.limits.scratch_bytes.max(1 << 20),
-        address_space: (spawn.address_space && cfg!(target_os = "linux")).then_some(spawn.limits.memory_bytes.saturating_add(1 << 30)),
+        address_space: (spawn.address_space && cfg!(target_os = "linux"))
+            .then_some(spawn.limits.memory_bytes.saturating_add(1 << 30)),
     };
     // SAFETY: the closure only makes async-signal-safe calls (fcntl, dup2, setrlimit, getrlimit).
     unsafe {
@@ -223,8 +252,11 @@ pub(crate) fn run(kind: &Kind, spawn: &Spawn<'_>, serve: &mut dyn FnMut(&[u8]) -
     let started = Instant::now();
     let mut child = cmd.spawn().map_err(|e| {
         RunError::unavailable(
-            format!("The code runner couldn't start {}: {e}", spawn.program.display()),
-            "Check CALC_RUNNER_PYTHON and CALC_RUNNER_NODE (scripts/setup-runner.sh makes the Python).",
+            format!(
+                "The file converter couldn't start {}: {e}",
+                spawn.program.display()
+            ),
+            "Check CALC_RUNNER_PYTHON (scripts/setup-runner.sh makes the Python).",
         )
     })?;
     // The child's ends belong to the child now.
@@ -232,15 +264,24 @@ pub(crate) fn run(kind: &Kind, spawn: &Spawn<'_>, serve: &mut dyn FnMut(&[u8]) -
     drop(resp_r);
     let pid = child.id() as i32;
     let out_cap = spawn.limits.output_bytes;
-    let stdout = child.stdout.take().map(|s| thread::spawn(move || capped(s, out_cap)));
-    let stderr = child.stderr.take().map(|s| thread::spawn(move || capped(s, out_cap)));
+    let stdout = child
+        .stdout
+        .take()
+        .map(|s| thread::spawn(move || capped(s, out_cap)));
+    let stderr = child
+        .stderr
+        .take()
+        .map(|s| thread::spawn(move || capped(s, out_cap)));
 
     let reaped = Arc::new(Mutex::new(false));
     let stop: Arc<Mutex<Option<Stop>>> = Arc::default();
-    let peak = Arc::new(AtomicU64::new(0));
     let watchdog = {
-        let (reaped, stop, peak) = (reaped.clone(), stop.clone(), peak.clone());
-        let (timeout, memory, disk) = (spawn.limits.timeout, spawn.limits.memory_bytes, spawn.limits.scratch_bytes);
+        let (reaped, stop) = (reaped.clone(), stop.clone());
+        let (timeout, memory, disk) = (
+            spawn.limits.timeout,
+            spawn.limits.memory_bytes,
+            spawn.limits.scratch_bytes,
+        );
         let scratch = spawn.scratch.to_owned();
         thread::spawn(move || {
             let mut last_disk = Instant::now();
@@ -254,7 +295,6 @@ pub(crate) fn run(kind: &Kind, spawn: &Spawn<'_>, serve: &mut dyn FnMut(&[u8]) -
                 if started.elapsed() > timeout {
                     why = Some(Stop::Timeout);
                 } else if let Some(m) = tree_memory(pid) {
-                    peak.fetch_max(m, Ordering::Relaxed);
                     if m > memory {
                         why = Some(Stop::Memory);
                     }
@@ -284,7 +324,10 @@ pub(crate) fn run(kind: &Kind, spawn: &Spawn<'_>, serve: &mut dyn FnMut(&[u8]) -
         let mut line = Vec::new();
         loop {
             line.clear();
-            match (&mut reader).take(MAX_REQUEST as u64 + 1).read_until(b'\n', &mut line) {
+            match (&mut reader)
+                .take(MAX_REQUEST as u64 + 1)
+                .read_until(b'\n', &mut line)
+            {
                 Ok(0) => break,
                 Ok(_) if line.len() > MAX_REQUEST => break,
                 Ok(_) => {
@@ -303,7 +346,9 @@ pub(crate) fn run(kind: &Kind, spawn: &Spawn<'_>, serve: &mut dyn FnMut(&[u8]) -
     // Wait for the child to end without reaping it, so the watchdog never signals a reused process group.
     wait_exited(pid);
     *reaped.lock().expect("reaped lock") = true;
-    let status = child.wait().map_err(|e| RunError::internal(format!("waiting for the code's process: {e}")))?;
+    let status = child
+        .wait()
+        .map_err(|e| RunError::internal(format!("waiting for the converter process: {e}")))?;
     let _ = watchdog.join();
     let stdout = stdout.and_then(|t| t.join().ok()).unwrap_or_default();
     let stderr = stderr.and_then(|t| t.join().ok()).unwrap_or_default();
@@ -314,7 +359,6 @@ pub(crate) fn run(kind: &Kind, spawn: &Spawn<'_>, serve: &mut dyn FnMut(&[u8]) -
         stop,
         stdout,
         stderr,
-        peak_memory: peak.load(Ordering::Relaxed),
     })
 }
 
@@ -340,8 +384,15 @@ fn prepare_child(req_w: i32, resp_r: i32, limits: &ChildLimits) -> std::io::Resu
         if libc::dup2(a, 3) < 0 || libc::dup2(b, 4) < 0 {
             return Err(err());
         }
-        let mut nofile = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
-        let top = if libc::getrlimit(libc::RLIMIT_NOFILE, &mut nofile) == 0 { nofile.rlim_cur.min(65_536) as i32 } else { 4096 };
+        let mut nofile = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        let top = if libc::getrlimit(libc::RLIMIT_NOFILE, &mut nofile) == 0 {
+            nofile.rlim_cur.min(65_536) as i32
+        } else {
+            4096
+        };
         for fd in 5..top {
             let flags = libc::fcntl(fd, libc::F_GETFD);
             if flags >= 0 && flags & libc::FD_CLOEXEC == 0 {
@@ -349,7 +400,10 @@ fn prepare_child(req_w: i32, resp_r: i32, limits: &ChildLimits) -> std::io::Resu
             }
         }
         let set = |res, value: u64| {
-            let lim = libc::rlimit { rlim_cur: value as libc::rlim_t, rlim_max: value as libc::rlim_t };
+            let lim = libc::rlimit {
+                rlim_cur: value as libc::rlim_t,
+                rlim_max: value as libc::rlim_t,
+            };
             libc::setrlimit(res, &lim)
         };
         set(libc::RLIMIT_CORE, 0);
@@ -367,7 +421,10 @@ fn pipe() -> Result<(OwnedFd, OwnedFd), RunError> {
     let mut fds = [0i32; 2];
     unsafe {
         if libc::pipe(fds.as_mut_ptr()) != 0 {
-            return Err(RunError::internal(format!("making a pipe: {}", std::io::Error::last_os_error())));
+            return Err(RunError::internal(format!(
+                "making a pipe: {}",
+                std::io::Error::last_os_error()
+            )));
         }
         for fd in fds {
             libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
@@ -380,7 +437,14 @@ fn pipe() -> Result<(OwnedFd, OwnedFd), RunError> {
 fn wait_exited(pid: i32) {
     loop {
         let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-        let r = unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT) };
+        let r = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
         if r == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
             return;
         }
@@ -411,7 +475,7 @@ fn capped(mut s: impl std::io::Read, cap: usize) -> String {
             text.pop();
         }
         text.push_str(&format!(
-            "\n… (cut here: the code printed {} bytes, and a run keeps the first {})",
+            "\n… (cut here: the converter printed {} bytes, and a run keeps the first {})",
             group_digits(total),
             group_digits(cap as u64)
         ));
@@ -442,19 +506,35 @@ fn tree_memory(pid: i32) -> Option<u64> {
 #[cfg(target_os = "macos")]
 fn process_memory(pid: i32) -> Option<u64> {
     let mut info: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
-    let r = unsafe { libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V2, &mut info as *mut libc::rusage_info_v2 as *mut libc::rusage_info_t) };
+    let r = unsafe {
+        libc::proc_pid_rusage(
+            pid,
+            libc::RUSAGE_INFO_V2,
+            &mut info as *mut libc::rusage_info_v2 as *mut libc::rusage_info_t,
+        )
+    };
     (r == 0).then_some(info.ri_phys_footprint.max(info.ri_resident_size))
 }
 
 #[cfg(target_os = "macos")]
 fn children_of(pid: i32) -> Vec<i32> {
     let mut buf = vec![0i32; 64];
-    let n = unsafe { libc::proc_listchildpids(pid, buf.as_mut_ptr() as *mut libc::c_void, (buf.len() * 4) as i32) };
+    let n = unsafe {
+        libc::proc_listchildpids(
+            pid,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            (buf.len() * 4) as i32,
+        )
+    };
     if n <= 0 {
         return Vec::new();
     }
     // Returns a count of pids on current macOS (bytes on some older ones).
-    let count = if n as usize > buf.len() { n as usize / 4 } else { n as usize };
+    let count = if n as usize > buf.len() {
+        n as usize / 4
+    } else {
+        n as usize
+    };
     buf.truncate(count.min(buf.len()));
     buf.retain(|&p| p > 0);
     buf
@@ -474,7 +554,10 @@ fn children_of(pid: i32) -> Vec<i32> {
     if let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) {
         for t in tasks.flatten() {
             if let Ok(text) = std::fs::read_to_string(t.path().join("children")) {
-                out.extend(text.split_whitespace().filter_map(|s| s.parse::<i32>().ok()));
+                out.extend(
+                    text.split_whitespace()
+                        .filter_map(|s| s.parse::<i32>().ok()),
+                );
             }
         }
     }
@@ -497,7 +580,9 @@ pub(crate) fn dir_size(dir: &Path, max_entries: usize) -> u64 {
     let mut seen = 0;
     let mut stack = vec![dir.to_owned()];
     while let Some(d) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&d) else { continue };
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in entries.flatten() {
             seen += 1;
             if seen > max_entries {
@@ -542,9 +627,17 @@ pub(crate) fn macos_profile(spawn: &Spawn<'_>) -> String {
         read.push_str(&format!("\n  (subpath {})", sb_string(&p)));
     }
     let scratch = sb_string(spawn.scratch);
+    let desktop = if spawn.desktop_converter {
+        format!(
+            "(allow process-fork)\n(allow mach-lookup)\n(allow ipc-posix-shm)\n(allow network* (local unix-socket) (remote unix-socket))\n(allow file-read* (subpath \"/Library/Fonts\") (subpath \"/Library/Preferences\"))\n"
+        )
+    } else {
+        String::new()
+    };
     format!(
         "(version 1)
 (deny default)
+{desktop}
 (allow process-exec{exec})
 (allow signal (target self))
 (allow sysctl-read)
@@ -563,17 +656,68 @@ pub(crate) fn macos_profile(spawn: &Spawn<'_>) -> String {
     )
 }
 
-/// The bwrap arguments for one child: the system and the interpreter read-only, the scratch folder writable,
-/// every namespace (network included) unshared.
+const SYSTEM_READ_OPTIONAL: &[&str] = &[
+    "/lib",
+    "/lib64",
+    "/lib32",
+    "/bin",
+    "/sbin",
+    "/etc/ld.so.cache",
+    "/etc/ld.so.conf",
+    "/etc/ld.so.conf.d",
+    "/etc/alternatives",
+];
+
+/// Mount a requested root only once, before any independent deeper roots. Rebinding a Python executable
+/// through a symlink inside an already-readonly venv can require creating its destination and fail with
+/// EROFS. A root already exposes all its descendants; separate resolved targets remain separate roots.
+fn extra_readonly_mounts(spawn: &Spawn<'_>) -> Vec<PathBuf> {
+    let mut candidates: Vec<_> = spawn
+        .read
+        .iter()
+        .chain(&spawn.exec)
+        .flat_map(|p| both_forms(p))
+        .collect();
+    candidates.sort_by(|a, b| {
+        a.components()
+            .count()
+            .cmp(&b.components().count())
+            .then_with(|| a.cmp(b))
+    });
+    let mut mounts: Vec<PathBuf> = Vec::new();
+    for path in candidates {
+        if path.starts_with("/usr")
+            || SYSTEM_READ_OPTIONAL
+                .iter()
+                .any(|root| path.starts_with(root))
+            || mounts.iter().any(|root| path.starts_with(root))
+        {
+            continue;
+        }
+        mounts.push(path);
+    }
+    mounts
+}
+
+/// The system and interpreter are read-only, scratch is writable, and every namespace (including network) is unshared.
 pub(crate) fn bwrap_args(spawn: &Spawn<'_>) -> Vec<OsString> {
     let mut a: Vec<OsString> = Vec::new();
     let mut push = |items: &[&str]| a.extend(items.iter().map(OsString::from));
-    push(&["--die-with-parent", "--new-session", "--unshare-all", "--cap-drop", "ALL", "--ro-bind", "/usr", "/usr"]);
-    for p in ["/lib", "/lib64", "/lib32", "/bin", "/sbin", "/etc/ld.so.cache", "/etc/ld.so.conf", "/etc/ld.so.conf.d", "/etc/alternatives"] {
+    push(&[
+        "--die-with-parent",
+        "--new-session",
+        "--unshare-all",
+        "--cap-drop",
+        "ALL",
+        "--ro-bind",
+        "/usr",
+        "/usr",
+    ]);
+    for p in SYSTEM_READ_OPTIONAL {
         push(&["--ro-bind-try", p, p]);
     }
     push(&["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"]);
-    for p in spawn.read.iter().chain(spawn.exec.iter()).flat_map(|p| both_forms(p)) {
+    for p in extra_readonly_mounts(spawn) {
         a.push("--ro-bind-try".into());
         a.push(p.clone().into());
         a.push(p.into());
@@ -584,4 +728,98 @@ pub(crate) fn bwrap_args(spawn: &Spawn<'_>) -> Vec<OsString> {
     a.push("--chdir".into());
     a.push(spawn.scratch.into());
     a
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bwrap_deduplicates_venv_and_resolved_interpreter_roots_before_binding() {
+        let fixture = crate::Scratch::new(&std::env::temp_dir()).unwrap();
+        let venv = fixture.path.join("runner-venv");
+        let base = fixture.path.join("python/cpython-3.14.2-linux-aarch64-gnu");
+        std::fs::create_dir_all(venv.join("bin")).unwrap();
+        std::fs::create_dir_all(base.join("bin")).unwrap();
+        let program = venv.join("bin/python");
+        let real = base.join("bin/python3.14");
+        std::fs::write(&real, b"test interpreter fixture").unwrap();
+        std::os::unix::fs::symlink(&real, &program).unwrap();
+        let neighbor = fixture.path.join("runner-venv-extra/config");
+        let limits = Limits::default();
+        let spawn = Spawn {
+            program: program.clone(),
+            args: vec![],
+            env: vec![],
+            scratch: &fixture.path,
+            // The same order as Probe: executable aliases first, prefixes and module paths afterwards.
+            read: vec![
+                program.clone(),
+                real.clone(),
+                venv.clone(),
+                base.clone(),
+                base.join("lib/python314.zip"),
+                base.join("lib/python3.14"),
+                base.join("lib/python3.14/lib-dynload"),
+                venv.join("lib/python3.14/site-packages"),
+                "/usr/lib/python3.14".into(),
+                neighbor.clone(),
+                venv.clone(),
+            ],
+            exec: vec![program.clone(), "/usr/bin/true".into()],
+            limits: &limits,
+            address_space: true,
+            desktop_converter: false,
+        };
+        let mounts = extra_readonly_mounts(&spawn);
+        assert_eq!(mounts.len(), 3);
+        assert!(mounts.contains(&venv) && mounts.contains(&base) && mounts.contains(&neighbor));
+        assert!(!mounts.contains(&program) && !mounts.contains(&real));
+        assert!(
+            mounts
+                .windows(2)
+                .all(|pair| pair[0].components().count() <= pair[1].components().count())
+        );
+
+        let args = bwrap_args(&spawn);
+        let readonly = args
+            .windows(3)
+            .filter(|w| w[0] == "--ro-bind" || w[0] == "--ro-bind-try")
+            .map(|w| PathBuf::from(&w[2]))
+            .collect::<Vec<_>>();
+        assert_eq!(readonly.iter().filter(|p| *p == &venv).count(), 1);
+        assert_eq!(readonly.iter().filter(|p| *p == &base).count(), 1);
+        assert!(!readonly.contains(&program) && !readonly.contains(&real));
+        assert!(!readonly.contains(&PathBuf::from("/usr/bin/true")));
+        let bind = args.iter().position(|a| a == "--bind").unwrap();
+        assert_eq!(PathBuf::from(&args[bind + 1]), fixture.path);
+        assert!(args[bind + 3..].iter().all(|a| a != "--ro-bind-try"));
+        assert!(args.iter().any(|a| a == "--unshare-all"));
+    }
+
+    #[test]
+    fn bwrap_keeps_a_symlink_target_outside_the_readable_parent() {
+        let fixture = crate::Scratch::new(&std::env::temp_dir()).unwrap();
+        let venv = fixture.path.join("venv");
+        std::fs::create_dir(&venv).unwrap();
+        let real = fixture.path.join("separate-python");
+        std::fs::write(&real, b"test interpreter fixture").unwrap();
+        let program = venv.join("python");
+        std::os::unix::fs::symlink(&real, &program).unwrap();
+        let limits = Limits::default();
+        let spawn = Spawn {
+            program: program.clone(),
+            args: vec![],
+            env: vec![],
+            scratch: &fixture.path,
+            read: vec![venv.clone()],
+            exec: vec![program],
+            limits: &limits,
+            address_space: true,
+            desktop_converter: false,
+        };
+        let mounts = extra_readonly_mounts(&spawn);
+        assert_eq!(mounts.len(), 2);
+        assert!(mounts.contains(&venv) && mounts.contains(&real));
+    }
 }

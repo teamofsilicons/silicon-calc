@@ -325,7 +325,7 @@ pub(crate) async fn persist(
         .execute(&mut *tx)
         .await?;
     }
-    let moved = sqlx::query("update lines set head = $2 where id = $1 and head = $3")
+    let moved = sqlx::query("update lines set head = $2 where id = $1 and head = $3 and status = 'open'")
         .bind(line)
         .bind(meta.seq)
         .bind(meta.seq - 1)
@@ -422,7 +422,7 @@ pub(crate) async fn undo_target(app: &AppState, line_id: &str, author: Uuid, red
                         redone.insert(u);
                     }
                 }
-                OpKind::Undo => {
+                OpKind::Undo if undoes.is_some() => {
                     if !redone.contains(&seq) && has_inverse {
                         target = Some((seq, summary));
                         break;
@@ -433,7 +433,7 @@ pub(crate) async fn undo_target(app: &AppState, line_id: &str, author: Uuid, red
             }
         } else {
             match kind {
-                OpKind::Undo => {
+                OpKind::Undo if undoes.is_some() => {
                     if let Some(x) = undoes {
                         undone.insert(x);
                     }
@@ -616,12 +616,14 @@ pub(crate) struct OpListing {
     pub summary: String,
     pub facts: Option<Value>,
     pub cells_changed: i64,
+    /// For an undo of one's own change: the change it undid.
+    pub undoes: Option<i64>,
 }
 
 /// Operations before `before` (exclusive), newest first.
 pub(crate) async fn ops_before(app: &AppState, line_id: &str, before: i64, limit: i64) -> ApiResult<Vec<OpListing>> {
     Ok(sqlx::query_as(
-        "select seq, author, at, kind, summary, facts, cells_changed from ops
+        "select seq, author, at, kind, summary, facts, cells_changed, undoes from ops
          where line_id = $1 and seq < $2 order by seq desc limit $3",
     )
     .bind(line_id)

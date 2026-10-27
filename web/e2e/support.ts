@@ -10,9 +10,9 @@ import type { StoredSession } from "../lib/server/session";
 
 export { appConfig };
 
-export const BASE = process.env.E2E_BASE_URL ?? "http://127.0.0.1:4260";
-export const ACCOUNTS = process.env.E2E_ACCOUNTS_URL ?? "http://localhost:9590";
-const MESSAGING = process.env.E2E_MESSAGING_URL ?? "http://127.0.0.1:9592";
+export const BASE = process.env.E2E_BASE_URL ?? "http://127.0.0.1:8744";
+export const ACCOUNTS = process.env.E2E_ACCOUNTS_URL ?? "http://localhost:9990";
+const MESSAGING = process.env.E2E_MESSAGING_URL ?? "http://127.0.0.1:9992";
 
 /** A fresh address per run, named after the app: the stack is shared by every app's tests. */
 export const uniqueEmail = (purpose: string) => `${appConfig.appId}-${purpose}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}@example.test`;

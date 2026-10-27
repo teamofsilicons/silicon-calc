@@ -11,16 +11,16 @@ How the repository is built, run and tested, and the rules every change follows.
 | Path | What |
 | --- | --- |
 | `crates/calc-engine` | The spreadsheet engine (no I/O). `formula/functions.rs` is the function library; `formats/` reads and writes files. |
-| `crates/calc-runner` | SQL (DuckDB), Python and JavaScript runs, sandboxed; Parquet, Numbers and `.xls` writing conversions. |
+| `crates/calc-runner` | Trusted Parquet, sandboxed Python file conversion, LibreOffice and optional native Numbers conversions. |
 | `crates/calc-ting` | The Silicon Ting publisher (contract in its `lib.rs`). |
 | `crates/calc-api` | The service. `lib.rs` wires modules; `accounts`, `auth`, `perms`, `error`, `config`, `state`, `blobs`, `ids`, `db` are shared foundations. |
 | `crates/calc-api/src/{sheets,folders,sharing,transfers,search,comments,notify}.rs` | Platform: sheets, folders, sharing, transfers, search, comments, the Ting sender. |
 | `crates/calc-api/src/lines/` | Lines: open lines (one task each), cells, edits, live events, presence, versions, compare, restore, copies, merge. |
-| `crates/calc-api/src/{code,files}.rs` | Code runs and keep-updated tabs; imports and downloads. |
+| `crates/calc-api/src/{code,files}.rs` | Browser command result commits; imports and downloads. |
 | `crates/calc-api/tests/support/` | The test harness: a stand-in Silicon Accounts signing real EdDSA tokens, a fresh database per test, the service in-process. |
 | `crates/silicon-calc-client` | The Rust client for `docs/API.md`. |
 | `crates/calc-cli` | The `calc` command line. |
-| `runner/` | `calc.py` / `calc.mjs` helpers the code runner gives code, and the Python requirements. |
+| `runner/` | Fixed conversion programs and pinned Python dependencies. |
 | `web/` | The web app (Next.js from the Silicon web kit, Silicon UI). |
 | `e2e/`, `scripts/` | The local stack (Silicon Accounts, mock Ting), the end-to-end journeys, `dev.sh`, `e2e.sh`. |
 
@@ -49,14 +49,44 @@ connection; every test creates its own database (`tests/support::fresh_database`
 ## Building
 
 ```sh
-export CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=3
-export CARGO_TARGET_DIR=target/<your work item>     # one per work item, so parallel builds don't wait on each other
+export CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=2
+export CARGO_TARGET_DIR=target/api                 # reuse the existing target; coordinate concurrent builds
 cargo build -p <crate> && cargo test -p <crate>
 ```
 
-The disk has about 40 GB free and DuckDB's bundled build is large: check `df -h /` before big builds, never create
-more than one target directory per work item, and never delete someone else's. macOS has no `timeout`; use
+DuckDB's bundled build is large: check `df -h /` before big builds and reuse an existing target where possible.
+Coordinate access to a shared target; a separate target duplicates dependencies and needs additional disk
+space. Never delete someone else's build artifacts. macOS has no `timeout`; use
 `perl -e 'alarm shift; exec @ARGV' <seconds> <cmd…>` to bound a command.
+
+## Local startup and conversion dependencies
+
+Run `scripts/setup-runner.sh` to prepare the pinned Python conversion environment. JavaScript commands run
+in the browser; no server Node interpreter is configured. Install LibreOffice for XLS/ODS import and XLS/ODS/PDF export; set
+`CALC_RUNNER_LIBREOFFICE` when its executable is outside the standard locations. Linux also needs `bubblewrap`.
+See [`runner/README.md`](../runner/README.md) for sandbox and conversion limits.
+
+After the service and CLI have been built, start the usual local ports without duplicating build artifacts:
+
+```sh
+scripts/dev.sh --no-build --restart
+```
+
+`--no-build` selects the newest existing service and CLI binaries from the known targets; `CALC_API_BIN` and
+`CALC_BIN` can select exact binaries. The script prints the selected binary paths and build times. It restarts
+the service each time; `--restart` also restarts the web app and mock Ting. Logs are in `.dev/logs/`.
+
+Native Numbers conversion is disabled by default. For local macOS testing with Apple Numbers installed and
+Automation permission already granted, opt in explicitly:
+
+```sh
+CALC_RUNNER_NUMBERS_ENABLE=1 scripts/dev.sh --no-build --restart
+```
+
+The launch helper inherits exported environment variables, so this setting reaches the service unchanged.
+A later invocation without it uses the default fallback unless it remains exported in the shell; setting it to
+`0` explicitly disables the native bridge. Native Numbers runs with its own desktop app permissions and is
+outside runner sandbox and app resource limits. Keep it disabled for exposed or unattended service runs.
 
 ## Rules
 

@@ -31,10 +31,16 @@ export interface TabCode {
   inputs: number[];
   run_by: Account;
   run_at: string;
-  keep_updated: boolean;
 }
 
+export type FormatRuleKind =
+  | {kind:"condition";condition:string;value:string;second:string;paint:{fill:string|null;color:string|null;bold:boolean;italic:boolean;underline:boolean;strike:boolean}}
+  | {kind:"scale";low:string;high:string;middle:string|null}
+  | {kind:"alternating";first:string;second:string;header:string|null;footer:string|null};
+export interface FormatRule { id:string;range:string;rule:FormatRuleKind }
+
 export interface Tab {
+  format_rules?: FormatRule[];
   id: number;
   name: string;
   index: number;
@@ -54,7 +60,7 @@ export interface Sheet {
   owner: Account;
   folder_id: string | null;
   role: Role;
-  public: { enabled: boolean; access: PublicAccess };
+  public: { enabled: boolean; require_email?: boolean; access: PublicAccess };
   version: number;
   created_at: string;
   created_by: Account;
@@ -129,10 +135,11 @@ export interface Invite {
 }
 
 export interface Sharing {
+  role: Role;
   owner: Account;
   members: Member[];
   invites: Invite[];
-  public: { enabled: boolean; access: PublicAccess; url?: string };
+  public: { enabled: boolean; require_email?: boolean; access: PublicAccess; url?: string };
 }
 
 /* ---- styles (the engine's Style JSON) ---------------------------------------------------------------------------- */
@@ -146,6 +153,11 @@ export interface Border {
   color?: string;
 }
 
+export type CellControl =
+  | { kind: "person" | "file" | "rating" }
+  | { kind: "checkbox"; checked?: string; unchecked?: string }
+  | { kind: "dropdown"; options: string[] };
+
 export interface Style {
   bold?: boolean;
   italic?: boolean;
@@ -158,6 +170,9 @@ export interface Style {
   h_align?: HAlign;
   v_align?: VAlign;
   wrap?: boolean;
+  clip?: boolean;
+  rotation?: number;
+  control?: CellControl;
   num_fmt?: string;
   border_top?: Border;
   border_bottom?: Border;
@@ -178,6 +193,9 @@ export interface StylePatch {
   h_align?: HAlign;
   v_align?: VAlign;
   wrap?: boolean;
+  clip?: boolean;
+  rotation?: number;
+  control?: CellControl | null;
   num_fmt?: string | null;
   border_top?: Border | null;
   border_bottom?: Border | null;
@@ -189,11 +207,14 @@ export interface StylePatch {
 /* ---- cells ------------------------------------------------------------------------------------------------------- */
 
 export interface Cell {
+  cs?: Style;
   a: string;
   r: number;
   c: number;
   v: Value;
   t: string;
+  /** Text colour selected by a custom number-format section. */
+  tc?: string;
   f?: string;
   s?: number;
   spill?: boolean;
@@ -260,6 +281,8 @@ export interface CellDetail extends Partial<CellsAnswer> {
 export type TabRef = number | string;
 
 export type Edit =
+  | {type:"format_rule";tab:TabRef;range:string;id?:string;rule:FormatRuleKind}
+  | {type:"delete_format_rule";tab:TabRef;id:string}
   | { type: "set"; tab: TabRef; cells: Array<{ a: string; input: string }> }
   | { type: "set"; tab: TabRef; at: string; rows: string[][] }
   | { type: "values"; tab: TabRef; at: string; rows: unknown[][] }
@@ -325,13 +348,15 @@ export interface Viewer {
 
 /* ---- code -------------------------------------------------------------------------------------------------------- */
 
-export type CodeLanguage = "sql" | "python" | "javascript";
+export type CodeLanguage = "javascript";
 
 export interface RunRequest {
-  language: CodeLanguage;
   code: string;
-  into: null | { new_tab: string } | { tab: TabRef; at: string };
-  keep_updated?: boolean;
+  base_version: number;
+  inputs: number[];
+  columns: string[];
+  rows: Array<Array<string | number | boolean | null>>;
+  into: { new_tab: string } | { tab: TabRef; at: string; replace?: boolean };
 }
 
 export interface RunAnswer {
@@ -369,6 +394,7 @@ export interface CellSummary {
 
 export interface CellDiff {
   tab: number;
+  /** The tab's stable row and column ids (not positions; `address` is where the cell is). */
   row: number;
   col: number;
   address: string;
@@ -481,8 +507,8 @@ export interface Meta {
   app_id: string;
   version: string;
   accounts_url: string;
-  limits: { max_rows: number; max_cols: number; max_upload_bytes: number; max_cells_per_edit: number; code_timeout_seconds: number };
+  limits: { max_rows: number; max_cols: number; max_upload_bytes: number; max_cells_per_edit: number; browser_command_timeout_seconds: number; conversion_timeout_seconds: number };
 }
 
 /** Download formats (docs/API.md Files). */
-export type DownloadFormat = "xlsx" | "xls" | "ods" | "numbers" | "csv" | "tsv" | "json" | "parquet" | "pdf";
+export type DownloadFormat = "xlsx" | "xls" | "ods" | "numbers" | "csv" | "tsv" | "json" | "parquet" | "pdf" | "html";

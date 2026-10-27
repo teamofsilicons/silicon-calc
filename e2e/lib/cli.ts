@@ -105,6 +105,48 @@ export class Cli {
     });
   }
 
+  /**
+   * Starts `calc <args>` and leaves it running (`calc watch …`): `done` resolves when it exits, `lines` holds what it
+   * printed on stdout so far, one entry per line, and `stop()` ends it.
+   */
+  start(args: string[], o: { timeoutMs?: number } = {}): { done: Promise<CliRun>; lines: string[]; stop: () => void } {
+    if (!this.available) {
+      const done = Promise.reject(new Error(`the calc command line is not built at ${this.o.bin} (scripts/e2e.sh builds it; set CALC_CLI to use another)`));
+      done.catch(() => {});
+      return { done, lines: [], stop: () => {} };
+    }
+    const lines: string[] = [];
+    const t0 = performance.now();
+    const child = spawn(this.o.bin, args, { env: this.env(), stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+    let partial = '';
+    child.stdout.on('data', (d: Buffer) => {
+      const s = d.toString('utf8');
+      out += s;
+      partial += s;
+      let nl: number;
+      while ((nl = partial.indexOf('\n')) >= 0) {
+        lines.push(partial.slice(0, nl));
+        partial = partial.slice(nl + 1);
+      }
+    });
+    child.stderr.on('data', (d: Buffer) => (err += d.toString('utf8')));
+    const timer = setTimeout(() => child.kill('SIGKILL'), o.timeoutMs ?? 120_000);
+    const done = new Promise<CliRun>((resolve, reject) => {
+      child.on('error', (e) => {
+        clearTimeout(timer);
+        reject(new Error(`calc could not be started (${this.o.bin}): ${e.message}`));
+      });
+      child.on('close', (code, signal) => {
+        clearTimeout(timer);
+        if (partial) lines.push(partial);
+        resolve({ args, code, signal, stdout: out, stderr: err, ms: performance.now() - t0 });
+      });
+    });
+    return { done, lines, stop: () => child.kill('SIGTERM') };
+  }
+
   /** `calc <args>` must succeed; answers stdout. */
   async text(args: string[], o: { stdin?: string; timeoutMs?: number } = {}): Promise<string> {
     const r = await this.run(args, o);

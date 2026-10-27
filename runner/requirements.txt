@@ -1,6 +1,5 @@
-# What Python code run inside Silicon Calc gets, and what the converters use (Numbers through numbers-parser,
-# .xls writing through xlwt). Every version is pinned, transitive ones included, so every machine runs the same
-# code. Install with scripts/setup-runner.sh. Regenerate the pins with:
+# Trusted converter environment (Numbers through numbers-parser). Earlier helper dependencies remain pinned
+# for reproducible existing installations; no submitted commands execute in this environment. Install with scripts/setup-runner.sh. Regenerate the pins with:
 #   uv pip compile <(printf 'pandas\nnumpy\npyarrow\nduckdb\nnumbers-parser\nxlwt\n') --python-version 3.14
 #
 # Direct

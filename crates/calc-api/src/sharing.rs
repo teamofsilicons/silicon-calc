@@ -76,7 +76,7 @@ struct Item {
     parent: Option<String>,
     role: Role,
     in_trash: bool,
-    public: Option<(bool, String)>,
+    public: Option<(bool, String, bool)>,
 }
 
 impl Item {
@@ -128,7 +128,7 @@ async fn item(state: &AppState, caller: &Caller, kind: Kind, id: &str) -> ApiRes
                 parent: a.sheet.folder_id.clone(),
                 role: a.role,
                 in_trash: a.in_trash,
-                public: Some((a.sheet.public_enabled, a.sheet.public_access.clone())),
+                public: Some((a.sheet.public_enabled, a.sheet.public_access.clone(), a.sheet.require_email)),
             })
         }
         Kind::Folder => {
@@ -272,7 +272,7 @@ async fn sharing_json(state: &AppState, caller: &Caller, item: &Item) -> ApiResu
         .map(|(email, role, by, at)| json!({"email": email, "role": role, "invited_by": acct(*by), "created_at": rfc3339(*at)}))
         .collect();
     let public = match &item.public {
-        Some((enabled, access)) => json!({"enabled": enabled, "access": access}),
+        Some((enabled, access, require_email)) => json!({"enabled": enabled, "access": access, "require_email": require_email}),
         None => json!({"enabled": false, "access": "view"}),
     };
     Ok(json!({
@@ -737,30 +737,39 @@ async fn folder_uninvite(State(state): State<AppState>, caller: Caller, Path((fo
 
 #[derive(Deserialize)]
 struct PublicBody {
+    require_email: Option<bool>,
     enabled: Option<bool>,
     access: Option<String>,
 }
 
 async fn sheet_public(State(state): State<AppState>, caller: Caller, Path(sheet): Path<String>, JsonBody(body): JsonBody<PublicBody>) -> ApiResult<Json<Value>> {
     let item = item(&state, &caller, Kind::Sheet, &sheet).await?;
-    item.require_share()?;
-    let (was_enabled, was_access) = item.public.clone().unwrap_or((false, "view".into()));
+    let (was_enabled, was_access, was_require_email) = item.public.clone().unwrap_or((false, "view".into(), false));
+    let require_email = body.require_email.unwrap_or(was_require_email);
+    if require_email != was_require_email && caller.uuid != item.owner {
+        return Err(ApiError::not_allowed("Only the owner can change the email requirement.", "Ask the file owner."));
+    }
     let enabled = body.enabled.unwrap_or(was_enabled);
     let access = body.access.as_deref().map(|a| a.trim().to_ascii_lowercase()).unwrap_or(was_access);
     let Some(link_role) = Role::of_public_access(&access) else {
         return Err(ApiError::invalid_field("access", format!("\"{access}\" isn't a public link access; use view, comment or edit.")));
     };
+    item.require_share()?;
     if enabled {
         not_above(&item, link_role)?;
     }
-    sqlx::query("update sheets set public_enabled = $2, public_access = $3, updated_at = now(), updated_by = $4 where id = $1")
+    sqlx::query("update sheets set public_enabled = $2, public_access = $3, updated_at = now(), updated_by = $4,
+        email_gate_version = email_gate_version + case when public_enabled <> $2 or public_access <> $3 or require_email <> $5 then 1 else 0 end,
+        require_email = $5 where id = $1")
         .bind(&item.id)
         .bind(enabled)
         .bind(&access)
         .bind(caller.uuid)
+        .bind(require_email)
         .execute(&state.db)
         .await?;
-    Ok(Json(json!({"enabled": enabled, "access": access, "url": state.cfg.sheet_url(&item.id)})))
+    state.lines.access_changed(&item.id);
+    Ok(Json(json!({"enabled": enabled, "access": access, "require_email": require_email, "url": state.cfg.sheet_url(&item.id)})))
 }
 
 async fn folder_public(State(state): State<AppState>, caller: Caller, Path(folder): Path<String>) -> ApiResult<Json<Value>> {

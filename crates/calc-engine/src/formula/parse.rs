@@ -47,8 +47,6 @@ enum Tok {
     Err(ErrorKind),
     /// A reference, already parsed. `tab` is the name as written.
     Ref { tab: Option<String>, r: RefTok },
-    /// A tab prefix whose reference failed to parse, or a reference to a tab that does not exist.
-    BadRef,
     Func(String),
     Name(String),
     Op(&'static str),
@@ -301,7 +299,8 @@ impl<'a> Lexer<'a> {
                             name = r.to_owned();
                         }
                     }
-                    Tok::Func(name)
+                    // Built-ins have canonical spelling; a named LAMBDA keeps the spelling of its binding.
+                    Tok::Func(if super::functions::is_known(&name) || name.len() != w.len() { name } else { w.to_owned() })
                 } else if let Some(r) = self.try_ref(w) {
                     Tok::Ref { tab: None, r }
                 } else if w.eq_ignore_ascii_case("TRUE") {
@@ -525,7 +524,6 @@ impl Parser<'_, '_> {
             Tok::Str(s) => Expr::Text(Arc::from(s.as_str())),
             Tok::Bool(b) => Expr::Bool(b),
             Tok::Err(e) => Expr::Error(e),
-            Tok::BadRef => Expr::Error(ErrorKind::Ref),
             Tok::Ref { tab, r } => self.reference(tab, r)?,
             Tok::Name(n) => Expr::Name(Arc::from(n.as_str())),
             Tok::LParen => {

@@ -1,7 +1,7 @@
 //! # silicon-calc-client
 //!
 //! A typed async client for the [Silicon Calc](https://calc.teamofsilicons.com) service: sheets and folders,
-//! sharing and transfers, tabs and cells, edits, live events, SQL/Python/JavaScript runs, imports and downloads,
+//! sharing and transfers, tabs and cells, edits, live events, browser command result commits, imports and downloads,
 //! copies and merges, versions, comments and search. Carbons and Silicons use the same API; the `calc` command
 //! line is built on this crate.
 //!

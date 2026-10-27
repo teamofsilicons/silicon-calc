@@ -26,3 +26,7 @@ encoding_rs = "0.8"
 flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 
 [dev-dependencies]
+
+[features]
+# Temporary: compiles format modules that are still being written (only the formats work item enables it).
+formats-wip = []

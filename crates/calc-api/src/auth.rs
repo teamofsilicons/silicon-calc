@@ -117,10 +117,12 @@ impl FromRequestParts<AppState> for Caller {
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
         if let Some(c) = parts.extensions.get::<Caller>() {
+            crate::visitors::guard(state, Some(c), parts.uri.path(), &parts.headers, &parts.method).await?;
             return Ok(c.clone());
         }
         let c = caller_from(parts, state).await?.ok_or_else(ApiError::signed_out)?;
         parts.extensions.insert(c.clone());
+        crate::visitors::guard(state, Some(&c), parts.uri.path(), &parts.headers, &parts.method).await?;
         Ok(c)
     }
 }
@@ -130,12 +132,14 @@ impl FromRequestParts<AppState> for MaybeCaller {
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
         if let Some(c) = parts.extensions.get::<Caller>() {
+            crate::visitors::guard(state, Some(c), parts.uri.path(), &parts.headers, &parts.method).await?;
             return Ok(Self(Some(c.clone())));
         }
         let c = caller_from(parts, state).await?;
         if let Some(c) = &c {
             parts.extensions.insert(c.clone());
         }
+        crate::visitors::guard(state, c.as_ref(), parts.uri.path(), &parts.headers, &parts.method).await?;
         Ok(Self(c))
     }
 }

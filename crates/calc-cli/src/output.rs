@@ -1,6 +1,5 @@
 //! Readable output: aligned tables, a grid of cells with column letters and row numbers, times.
 
-use serde_json::Value as Json;
 use silicon_calc_client::a1::col_name;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -59,16 +58,6 @@ impl Table {
         }
     }
 
-    /// A table whose headers are shown exactly as written (column names of data).
-    pub fn raw(headers: &[String]) -> Self {
-        Self {
-            headers: headers.iter().map(|h| truncate(&one_line(h), MAX_COLUMN_WIDTH)).collect(),
-            rows: Vec::new(),
-            right: vec![false; headers.len()],
-            max_width: MAX_COLUMN_WIDTH,
-        }
-    }
-
     /// Right-aligns a column (numbers).
     pub fn right(mut self, col: usize) -> Self {
         if col < self.right.len() {
@@ -77,21 +66,8 @@ impl Table {
         self
     }
 
-    pub fn max_width(mut self, width: usize) -> Self {
-        self.max_width = width.max(4);
-        self
-    }
-
     pub fn row(&mut self, cells: Vec<String>) {
         self.rows.push(cells.into_iter().map(|c| truncate(&one_line(&c), self.max_width)).collect());
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.rows.is_empty()
-    }
-
-    pub fn len(&self) -> usize {
-        self.rows.len()
     }
 
     pub fn render(&self) -> String {
@@ -208,39 +184,6 @@ pub fn when_ago(s: &str) -> String {
     format!("{} ({})", when(s), ago(s))
 }
 
-/// A plain JSON value as a cell shows it.
-pub fn json_text(v: &Json) -> String {
-    match v {
-        Json::Null => String::new(),
-        Json::Bool(true) => "TRUE".into(),
-        Json::Bool(false) => "FALSE".into(),
-        Json::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                return i.to_string();
-            }
-            if let Some(u) = n.as_u64() {
-                return u.to_string();
-            }
-            match n.as_f64() {
-                Some(f) if f.fract() == 0.0 && f.abs() < 1e15 => format!("{}", f as i64),
-                Some(f) => format!("{f}"),
-                None => n.to_string(),
-            }
-        }
-        Json::String(s) => s.clone(),
-        Json::Object(m) if m.contains_key("t") => match (m.get("t").and_then(Json::as_str), m.get("v")) {
-            (Some("empty"), _) | (_, None) => String::new(),
-            (_, Some(v)) => json_text(v),
-        },
-        other => other.to_string(),
-    }
-}
-
-/// True when a JSON value is a number (for right alignment).
-pub fn json_is_number(v: &Json) -> bool {
-    matches!(v, Json::Number(_)) || v.get("t").and_then(Json::as_str) == Some("number")
-}
-
 /// `1 cell`, `3 cells`.
 pub fn plural(n: u64, one: &str, many: &str) -> String {
     format!("{} {}", thousands(n), if n == 1 { one } else { many })
@@ -269,17 +212,19 @@ mod tests {
         t.row(vec!["k3j9xq2mpa7d".into(), "Q3 revenue".into(), "120".into()]);
         t.row(vec!["a".into(), "Café ☕".into(), "7".into()]);
         let out = t.render();
-        assert_eq!(out, "ID            TITLE       ROWS\nk3j9xq2mpa7d  Q3 revenue   120\na             Café ☕         7\n");
+        assert_eq!(out, "ID            TITLE       ROWS\nk3j9xq2mpa7d  Q3 revenue   120\na             Café ☕        7\n");
     }
 
     #[test]
     fn tables_keep_rows_on_one_line() {
-        let mut t = Table::new(&["a", "b"]).max_width(8);
-        t.row(vec!["line1\nline2".into(), "a very long text".into()]);
+        let mut t = Table::new(&["a", "b"]);
+        t.row(vec!["line1\nline2".into(), "x".repeat(MAX_COLUMN_WIDTH + 10)]);
         let out = t.render();
         assert_eq!(out.lines().count(), 2);
-        assert!(out.contains("line1\\n…"), "{out}");
-        assert!(out.contains("a very …"), "{out}");
+        assert!(out.contains("line1\\nline2"), "{out}");
+        let long = out.lines().nth(1).unwrap().split("  ").last().unwrap().to_owned();
+        assert_eq!(long.chars().count(), MAX_COLUMN_WIDTH, "{out}");
+        assert!(long.ends_with('…'), "{out}");
     }
 
     #[test]
@@ -301,10 +246,6 @@ mod tests {
         assert_eq!(thousands(12), "12");
         assert_eq!(plural(1, "cell", "cells"), "1 cell");
         assert_eq!(plural(2000, "cell", "cells"), "2,000 cells");
-        assert_eq!(json_text(&serde_json::json!(3.0)), "3");
-        assert_eq!(json_text(&serde_json::json!(2.5)), "2.5");
-        assert_eq!(json_text(&serde_json::json!(null)), "");
-        assert_eq!(json_text(&serde_json::json!({"t": "number", "v": 4})), "4");
         assert_eq!(when("2026-10-17T08:12:30Z"), "2026-10-17 08:12 UTC");
         assert_eq!(ago("not a time"), "not a time");
         let now = OffsetDateTime::now_utc().format(&Rfc3339).unwrap();

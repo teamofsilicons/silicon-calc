@@ -8,7 +8,7 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
@@ -175,10 +175,6 @@ pub fn home() -> CliResult<(PathBuf, &'static str)> {
 impl Store {
     pub fn new(dir: impl Into<PathBuf>) -> Self {
         Self { dir: dir.into() }
-    }
-
-    pub fn dir(&self) -> &Path {
-        &self.dir
     }
 
     pub fn path(&self) -> PathBuf {
@@ -448,7 +444,7 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             let mode = fs::metadata(store.path()).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600);
-            let dmode = fs::metadata(store.dir()).unwrap().permissions().mode() & 0o777;
+            let dmode = fs::metadata(store.path().parent().unwrap()).unwrap().permissions().mode() & 0o777;
             assert_eq!(dmode, 0o700);
         }
         let debug = format!("{loaded:?}");

@@ -5,6 +5,7 @@
 import assert from 'node:assert/strict';
 import { type Sheet, at, plain } from '../lib/calc.ts';
 import { journey } from '../lib/journey.ts';
+import { needs } from '../lib/steps.ts';
 import { type CarbonPerson, type SiliconPerson, world } from '../lib/world.ts';
 
 export default journey('Trash and restore', (j) => {
@@ -15,22 +16,28 @@ export default journey('Trash and restore', (j) => {
   let tab: number;
   let folder: { id: string; name: string };
   let inFolder: Sheet;
+  let hasData = false;
 
   const listed = async (scope: string, id: string, who = ada) => {
     const l = await who.api.get('/v1/sheets', { query: { scope } });
     return l.sheets.some((s: Sheet) => s.id === id);
   };
 
-  j.step('a Carbon has a sheet with data, shared with a Silicon, and a folder with a sheet in it', async () => {
+  j.step('a Carbon has a sheet shared with a Silicon, and a folder with a sheet in it', async () => {
     ada = await w.carbon('Ada');
     si = await w.silicon(ada, 'Analyst');
     plan = await ada.api.post<Sheet>('/v1/sheets', { json: { title: 'Old plan' } }, 201);
     tab = (await ada.api.get<Sheet>(`/v1/sheets/${plan.id}`)).tabs![0]!.id;
-    await ada.api.edit(plan.id, [{ type: 'set', tab, at: 'A1', rows: [['step', 'done'], ['draft', 'yes']] }]);
     await ada.api.post(`/v1/sheets/${plan.id}/sharing`, { json: { invite: [si.id], role: 'editor', notify: false } });
     folder = await ada.api.post('/v1/folders', { json: { name: 'Archive' } }, 201);
     inFolder = await ada.api.post<Sheet>('/v1/sheets', { json: { title: 'Filed away', folder_id: folder.id } }, 201);
     assert.equal(inFolder.folder_id, folder.id);
+  });
+
+  j.check('the Carbon writes data into the sheet', async () => {
+    await ada.api.edit(plan.id, [{ type: 'set', tab, at: 'A1', rows: [['step', 'done'], ['draft', 'yes']] }]);
+    assert.equal(plain(at(await ada.api.cells(plan.id, tab, 'B2'), 'B2')), 'yes');
+    hasData = true;
   });
 
   j.step('an editor can\'t move the owner\'s sheet to the trash', async () => {
@@ -46,13 +53,17 @@ export default journey('Trash and restore', (j) => {
     assert.equal(await listed('shared', plan.id, si), false, 'gone from the Silicon\'s shared sheets too');
   });
 
-  j.step('the owner restores it, with its cells intact', async () => {
+  j.step('the owner restores it from the trash', async () => {
     const s = await ada.api.post<Sheet>(`/v1/sheets/${plan.id}/restore`, {});
     assert.equal(s.trashed_at, null);
     assert.equal(await listed('mine', plan.id), true);
     assert.equal(await listed('trash', plan.id), false);
-    assert.equal(plain(at(await ada.api.cells(plan.id, tab, 'B2'), 'B2')), 'yes');
     assert.equal(await listed('shared', plan.id, si), true, 'the Silicon has it again');
+  });
+
+  j.check('the restored sheet has its cells intact', async () => {
+    needs(hasData, 'no data was written into the sheet (see that check)');
+    assert.equal(plain(at(await ada.api.cells(plan.id, tab, 'B2'), 'B2')), 'yes');
   });
 
   j.step('a folder goes to the trash with everything in it, and comes back the same way', async () => {

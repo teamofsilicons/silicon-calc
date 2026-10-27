@@ -1,5 +1,5 @@
 /**
- * The root layout: <html> and <body>, the Silicon look (Silicon UI's foundation, BDO Grotesk, Calc's light tokens,
+ * The root layout: <html> and <body>, the Silicon look (Silicon UI's foundation, Paper Mono, Calc's light tokens,
  * squircles, the base), the light-only boot script (inline, with the request's CSP nonce from proxy.ts) and the
  * metadata every page shares. It ships no client code of its own: the public pages stay server-rendered HTML with a few
  * small islands, the signed-in pages mount their providers in app/(workspace)/layout.tsx and the sheet editor in
@@ -15,6 +15,7 @@ import { headers } from "next/headers";
 import type { ReactNode } from "react";
 import { appConfig } from "@/lib/app.config";
 import { publicOrigin } from "@/lib/server/site";
+import { ImportProgress } from "@/components/import/import-progress";
 import { THEME_BOOT_SCRIPT } from "@/lib/theme";
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -37,7 +38,7 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
-  themeColor: "#F7F8FA",
+  themeColor: "#FFFFFF",
   colorScheme: "light",
 };
 
@@ -47,10 +48,10 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
     <html lang="en" data-theme="light" suppressHydrationWarning>
       <head>
         <script nonce={nonce} dangerouslySetInnerHTML={{ __html: THEME_BOOT_SCRIPT }} />
-        {/* Page titles are set in DemiBold: the one weight worth fetching before first paint. */}
-        <link rel="preload" href="/fonts/bdo-grotesk/BDOGrotesk-DemiBold.woff2" as="font" type="font/woff2" crossOrigin="anonymous" />
+        {/* The same variable face serves headings, controls, code and the spreadsheet canvas. */}
+        <link rel="preload" href="/fonts/paper-mono/v1.000/PaperMono-Variable.woff2" as="font" type="font/woff2" crossOrigin="anonymous" />
       </head>
-      <body>{children}</body>
+      <body>{children}<ImportProgress /></body>
     </html>
   );
 }

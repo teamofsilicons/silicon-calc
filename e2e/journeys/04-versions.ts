@@ -5,10 +5,11 @@
 // becomes a new sheet; and an account undoes and redoes its own last change.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { type Sheet, type Version, CalcApi, at, plain } from '../lib/calc.ts';
-import { SALES_FILE, revenueOf } from '../lib/fixtures.ts';
+import { revenueOf } from '../lib/fixtures.ts';
 import { journey } from '../lib/journey.ts';
+import { salesSheet } from '../lib/sheets.ts';
+import { needs } from '../lib/steps.ts';
 import { type CarbonPerson, type SiliconPerson, world } from '../lib/world.ts';
 
 async function versions(api: CalcApi, sheet: string): Promise<Version[]> {
@@ -23,6 +24,12 @@ async function value(api: CalcApi, sheet: string, tab: number, a: string, versio
   return plain(at(await api.cells(sheet, tab, a), a));
 }
 
+/** A value as the API writes it ({t, v}), or a formula text, as a plain value. */
+function plainOf(v: unknown): unknown {
+  if (v && typeof v === 'object' && 't' in (v as Record<string, unknown>)) return (v as { t: string; v?: unknown }).t === 'empty' ? null : (v as { v?: unknown }).v;
+  return v ?? null;
+}
+
 async function head(api: CalcApi, sheet: string): Promise<number> {
   return (await api.get(`/v1/sheets/${sheet}/tabs`)).version;
 }
@@ -33,6 +40,8 @@ export default journey('Versions: name, open, compare, undo one account, restore
   let si: SiliconPerson;
   let sheet: Sheet;
   let tab: number;
+  let tabName = '';
+  let cliSignedIn = false;
   let vImport: number;
   let vNamed: number;
   let vBeforeUndo: number;
@@ -40,13 +49,20 @@ export default journey('Versions: name, open, compare, undo one account, restore
   const E2 = revenueOf('January', 'EU');
   const E3 = revenueOf('January', 'US');
 
-  j.step('a Carbon opens the sales CSV and shares it with a Silicon as an editor', async () => {
+  j.step('a Carbon and a Silicon it made', async () => {
     ada = await w.carbon('Ada');
     si = await w.silicon(ada, 'Analyst');
-    sheet = await ada.api.post<Sheet>('/v1/sheets/import', { query: { filename: 'sales-2026.csv', title: 'Sales 2026' }, body: readFileSync(SALES_FILE), contentType: 'text/csv' }, 201);
-    tab = (await ada.api.get<Sheet>(`/v1/sheets/${sheet.id}`)).tabs![0]!.id;
+  });
+
+  salesSheet(j, 'the Carbon', () => ada.api, 'Sales 2026', (o) => {
+    sheet = o.sheet;
+    tab = o.tab.id;
+    tabName = o.tab.name;
+  });
+
+  j.step('the sheet as it was opened is a version; the Carbon shares it with the Silicon as an editor', async () => {
     vImport = await head(ada.api, sheet.id);
-    assert.ok(vImport >= 1, 'opening a file is a version');
+    assert.ok(vImport >= 1, 'opening a file (or typing the table) is a version');
     await ada.api.post(`/v1/sheets/${sheet.id}/sharing`, { json: { invite: [si.id], role: 'editor', notify: false } });
   });
 
@@ -176,7 +192,32 @@ export default journey('Versions: name, open, compare, undo one account, restore
 
   j.check('the Silicon lists the versions with the CLI (calc versions ls)', async () => {
     await si.cli.loginSilicon(si.id, si.stk);
+    cliSignedIn = true;
     const out = await si.cli.json(['versions', 'ls', sheet.id]);
-    assert.ok(JSON.stringify(out).includes(String(vImport)) || JSON.stringify(out).includes('restore'));
+    const text = JSON.stringify(out);
+    assert.ok(text.includes('restore') && text.includes(si.id), `calc versions ls shows the restore and the Silicon's version (${text.slice(0, 200)})`);
+  });
+
+  j.check('the Silicon reads and compares a past version with the CLI (calc versions read, calc versions compare)', async () => {
+    needs(cliSignedIn, 'the CLI is not signed in (see the check before)');
+    const read = await si.cli.json(['versions', 'read', sheet.id, String(vNamed), `${tabName}!A39`, '--format', 'values']);
+    assert.equal(read.values?.[0]?.[0], 'Checked by Ada', `A39 at version ${vNamed} (${JSON.stringify(read).slice(0, 200)})`);
+    const cmp = await si.cli.json(['versions', 'compare', sheet.id, String(vNamed)]);
+    assert.ok(JSON.stringify(cmp).includes('A40') || JSON.stringify(cmp).includes('A41'), 'the comparison lists cells changed since');
+  });
+
+  j.check('no change silently replaces another: overwriting a newer change is reported', async () => {
+    const seen = await head(ada.api, sheet.id);
+    await si.api.edit(sheet.id, [{ type: 'set', tab, cells: [{ a: 'H5', input: 'the Silicon\'s value' }] }]);
+    // The Carbon was still looking at the version before the Silicon's change.
+    const r = await ada.api.edit(sheet.id, [{ type: 'set', tab, cells: [{ a: 'H5', input: 'the Carbon\'s value' }] }], { base: seen });
+    const o = (r.overwrote ?? []).find((x) => x.a === 'H5');
+    assert.ok(o, `the answer reports the overwrite (${JSON.stringify(r.overwrote)})`);
+    assert.equal(o.by?.uuid, si.uuid, 'it names whose change was replaced');
+    assert.equal(plainOf(o.before), "the Silicon's value", 'and what it was');
+    assert.equal(await value(ada.api, sheet.id, tab, 'H5'), "the Carbon's value");
+    const c = await ada.api.get(`/v1/sheets/${sheet.id}/tabs/${tab}/cells/H5`);
+    const before = (c.history as Array<{ after: unknown }>).map((h) => plainOf(h.after));
+    assert.ok(before.includes("the Silicon's value"), 'the replaced value stays in the cell\'s history');
   });
 });

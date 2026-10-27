@@ -1,0 +1,10 @@
+[Unit]
+Description=Silicon Calc database and file backup
+After=postgresql.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/silicon-calc/backup.env
+ExecStart=/usr/bin/python3 /opt/silicon-calc/current/deploy/backup.py
+UMask=0077
+TimeoutStartSec=1800

@@ -6,8 +6,8 @@
 #   scripts/stop.sh --keep-accounts   leave the Silicon Accounts stack running
 #   scripts/stop.sh --quiet    print nothing unless something goes wrong
 #
-# Only pids recorded in .dev/run/<name>.pid whose command still matches are stopped (the whole process group,
-# SIGKILL after a grace period), so a stale pid file never stops anything else.
+# Only recorded processes whose start time still matches are stopped (older registrations match the command).
+# The whole process group is stopped, with SIGKILL after a grace period; reused pids are left alone.
 set -euo pipefail
 
 SCRIPT=stop
@@ -27,7 +27,8 @@ done
 export QUIET
 
 stop_service web 12
-stop_service calc-api 15
+# SIGINT first: calc-api saves its open lines before it exits.
+stop_service calc-api 15 INT
 stop_service mock-ting 5
 
 if [ -f "$RUN_DIR/accounts-stack.by-dev" ]; then

@@ -41,16 +41,6 @@ pub(crate) fn attr(e: &BytesStart<'_>, key: &[u8]) -> Option<String> {
     None
 }
 
-/// An attribute by its full name including the prefix (`table:name`), for formats where prefixes carry meaning.
-pub(crate) fn attr_q(e: &BytesStart<'_>, key: &[u8]) -> Option<String> {
-    for a in e.attributes().with_checks(false).flatten() {
-        if a.key.into_inner() == key {
-            return Some(value_of(&a));
-        }
-    }
-    None
-}
-
 /// The raw bytes of an attribute by local name (no unescaping, no allocation), for hot paths like cell refs.
 pub(crate) fn attr_raw<'a>(e: &'a BytesStart<'_>, key: &[u8]) -> Option<Cow<'a, [u8]>> {
     for a in e.attributes().with_checks(false).flatten() {
@@ -64,10 +54,6 @@ pub(crate) fn attr_raw<'a>(e: &'a BytesStart<'_>, key: &[u8]) -> Option<Cow<'a, 
 /// `1`, `true`, `on` (case-insensitive) are true.
 pub(crate) fn truthy(v: &str) -> bool {
     matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on")
-}
-
-pub(crate) fn attr_bool(e: &BytesStart<'_>, key: &[u8]) -> Option<bool> {
-    attr(e, key).map(|v| truthy(&v))
 }
 
 pub(crate) fn attr_u32(e: &BytesStart<'_>, key: &[u8]) -> Option<u32> {
@@ -182,6 +168,7 @@ pub(crate) fn skip_element<R: BufRead>(reader: &mut Reader<R>, buf: &mut Vec<u8>
 
 /// Text made safe for XML content and attribute values. Characters XML can't hold are dropped; line breaks and
 /// tabs in attributes are written as character references so they survive.
+#[cfg(any(test, feature = "formats-wip"))]
 pub(crate) fn escape(s: &str) -> Cow<'_, str> {
     if !s.bytes().any(|b| matches!(b, b'&' | b'<' | b'>' | b'"' | b'\'' | b'\n' | b'\r' | b'\t') || b < 0x20)
         && !s.contains(['\u{FFFE}', '\u{FFFF}'])

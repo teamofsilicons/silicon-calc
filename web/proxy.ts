@@ -31,6 +31,7 @@ function contentSecurityPolicy(nonce: string, env: ServerEnv): string {
     `img-src 'self' data: blob: ${images}`,
     "font-src 'self' data:",
     "connect-src 'self'",
+    "frame-src 'self'",
     "media-src 'self' blob:",
     "object-src 'none'",
     "frame-ancestors 'none'",
@@ -99,7 +100,7 @@ export const config = {
     {
       // Route handlers (the BFF under /api and /auth, the agent files, the icons and the social image) and static files
       // set their own headers.
-      source: "/((?!api/|auth/|_next/static|_next/image|fonts/|favicon\\.ico|icon|apple-icon|og\\.png|robots\\.txt|sitemap\\.xml|llms\\.txt|manifest\\.webmanifest).*)",
+      source: "/((?!api/|auth/|code-sandbox|_next/static|_next/image|fonts/|favicon\\.ico|icon|apple-icon|og\\.png|robots\\.txt|sitemap\\.xml|llms\\.txt|manifest\\.webmanifest).*)",
     },
   ],
 };

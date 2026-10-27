@@ -1,6 +1,6 @@
 //! Reading and writing files. Every format a sheet can be opened from or downloaded as goes through here, except
 //! Parquet and Apple Numbers, which the service converts with DuckDB and the code runner (they arrive here as
-//! rows of values), and writing `.xls`, which the code runner converts from `.xlsx`.
+//! rows of values), and OpenDocument/PDF and writing `.xls`, converted through the runner.
 //!
 //! Reading gives an [`Imported`]: the file's tabs as [`TabContent`] (values, formulas as A1 text written at their
 //! own cell, styles, sizes, merges, frozen panes, hidden rows and columns), its defined names, charts, tab
@@ -9,10 +9,14 @@
 
 pub mod csv;
 mod colors;
+mod cell_controls;
+mod conditional;
+mod html;
 mod json;
+pub mod programs;
 mod numfmts;
+#[cfg(any(test, feature = "formats-wip"))]
 mod ods;
-mod pdf;
 mod text;
 mod xls;
 mod xlsx;
@@ -43,11 +47,12 @@ pub enum Format {
     Json,
     Parquet,
     Pdf,
+    Html,
 }
 
 impl Format {
-    pub const ALL: [Format; 9] =
-        [Self::Csv, Self::Tsv, Self::Xlsx, Self::Xls, Self::Ods, Self::Numbers, Self::Json, Self::Parquet, Self::Pdf];
+    pub const ALL: [Format; 10] =
+        [Self::Csv, Self::Tsv, Self::Xlsx, Self::Xls, Self::Ods, Self::Numbers, Self::Json, Self::Parquet, Self::Pdf, Self::Html];
 
     pub fn extension(self) -> &'static str {
         match self {
@@ -60,6 +65,7 @@ impl Format {
             Self::Json => "json",
             Self::Parquet => "parquet",
             Self::Pdf => "pdf",
+            Self::Html => "html",
         }
     }
 
@@ -75,6 +81,7 @@ impl Format {
             Self::Json => "JSON",
             Self::Parquet => "Parquet",
             Self::Pdf => "PDF",
+            Self::Html => "Web page",
         }
     }
 
@@ -89,6 +96,7 @@ impl Format {
             Self::Json => "application/json",
             Self::Parquet => "application/vnd.apache.parquet",
             Self::Pdf => "application/pdf",
+            Self::Html => "text/html; charset=utf-8",
         }
     }
 
@@ -103,6 +111,7 @@ impl Format {
             "json" | "jsonl" | "ndjson" => Self::Json,
             "parquet" => Self::Parquet,
             "pdf" => Self::Pdf,
+            "html" | "htm" => Self::Html,
             _ => return None,
         })
     }
@@ -138,12 +147,12 @@ impl Format {
 
     /// Formats a whole sheet can be downloaded as (the rest download one tab).
     pub fn holds_many_tabs(self) -> bool {
-        matches!(self, Self::Xlsx | Self::Xls | Self::Ods | Self::Numbers | Self::Json | Self::Pdf)
+        matches!(self, Self::Xlsx | Self::Xls | Self::Ods | Self::Numbers | Self::Json | Self::Pdf | Self::Html)
     }
 
-    /// Whether a file in this format can be opened (every format but PDF).
+    /// Whether a file in this format can be opened (every format but PDF and HTML).
     pub fn can_open(self) -> bool {
-        !matches!(self, Self::Pdf)
+        !matches!(self, Self::Pdf | Self::Html)
     }
 }
 
@@ -206,6 +215,10 @@ pub struct Imported {
     pub charts: Vec<Chart>,
     /// Notes and comments on cells.
     pub notes: Vec<Note>,
+    /// JavaScript retained by a Calc workbook download, never evaluated during parsing.
+    pub functions: Vec<crate::javascript::Function>,
+    /// Original tab identities, when a Calc download carries executable definitions.
+    pub source_tabs: Vec<(TabId, String)>,
 }
 
 /// Options for reading.
@@ -250,7 +263,7 @@ impl FormatError {
             ),
             Self::Write { .. } => "Download one tab at a time, or choose CSV, which has no size limits.".to_owned(),
             Self::External(_) => "Send the file through the service's import, which converts it first.".to_owned(),
-            Self::Unsupported(_) => "Choose another format: .xlsx, .ods, .csv, .tsv or .json open; PDF only downloads.".to_owned(),
+            Self::Unsupported(_) => "Choose another format: .xlsx, .ods, .csv, .tsv or .json open; PDF and HTML only download.".to_owned(),
         }
     }
 
@@ -270,26 +283,29 @@ pub fn import(format: Format, bytes: &[u8], opts: &ImportOptions) -> Result<Impo
         Format::Tsv => csv::import(bytes, Some(b'\t'), opts),
         Format::Xlsx => xlsx::import(bytes, opts),
         Format::Xls => xls::import(bytes, opts),
-        Format::Ods => ods::import(bytes, opts),
+        Format::Ods => Err(FormatError::External("OpenDocument")),
         Format::Json => json::import(bytes, opts),
         Format::Parquet => Err(FormatError::External("Parquet")),
         Format::Numbers => Err(FormatError::External("Numbers")),
         Format::Pdf => Err(FormatError::Unsupported("Opening PDF")),
+        Format::Html => Err(FormatError::Unsupported("Opening HTML")),
     }
 }
 
 /// Writes a sheet (or one tab of it).
 pub fn export(wb: &Workbook, format: Format, opts: &ExportOptions) -> Result<Vec<u8>, FormatError> {
+    programs::ensure_calculated(wb, format, opts)?;
     match format {
         Format::Csv => csv::export(wb, opts, b','),
         Format::Tsv => csv::export(wb, opts, b'\t'),
         Format::Xlsx => xlsx_write::export(wb, opts),
-        Format::Ods => ods::export(wb, opts),
+        Format::Ods => Err(FormatError::External("OpenDocument")),
         Format::Json => json::export(wb, opts),
-        Format::Pdf => pdf::export(wb, opts),
+        Format::Pdf => Err(FormatError::External("PDF")),
         Format::Xls => Err(FormatError::External("Excel 97-2003")),
         Format::Parquet => Err(FormatError::External("Parquet")),
         Format::Numbers => Err(FormatError::External("Numbers")),
+        Format::Html => html::export(wb, opts),
     }
 }
 
@@ -398,16 +414,20 @@ impl Imported {
             names.push(n);
         }
         let renamed = file_names.iter().zip(&names).any(|(a, b)| a != b);
-        let ids: Vec<TabId> = (0..self.tabs.len() as TabId).map(|i| wb.next_tab_id + i).collect();
+        let ids: Vec<TabId> = if wb.tabs.is_empty() && self.source_tabs.len() == self.tabs.len() {
+            self.source_tabs.iter().map(|t| t.0).collect()
+        } else { (0..self.tabs.len() as TabId).map(|i| wb.next_tab_id + i).collect() };
         let (old_n, new_n) = (IndexNames(&file_names), IndexNames(&names));
 
         let mut ops = Vec::new();
+        if let Some(functions) = self.import_functions(wb, &ids, &names) { ops.push(Op::SetFunctions { functions }); }
         let at = index.map(|i| i.min(wb.tabs.len()));
         for (i, id) in ids.iter().enumerate() {
             ops.push(Op::AddTab { tab: *id, name: names[i].clone(), index: at.map(|a| a + i) });
         }
         for (i, (_, content)) in self.tabs.iter().enumerate() {
-            let content = if renamed { rename_content(content, &old_n, &new_n) } else { content.clone() };
+            let mut content = if renamed { rename_content(content, &old_n, &new_n) } else { content.clone() };
+            self.bind_programs(&mut content, &ids, &names);
             ops.push(Op::ReplaceTab { tab: ids[i], content: Box::new(content) });
             if let Some(color) = self.tab_info.get(i).and_then(|t| t.color.clone()) {
                 ops.push(Op::TabProps { tab: ids[i], props: TabProps { color: Some(Some(color)), ..Default::default() } });
@@ -427,6 +447,7 @@ impl Imported {
                     continue;
                 }
                 let text = if renamed { rename_in_formula(&n.text, 0, 0, &old_n, &new_n) } else { n.text.clone() };
+                let text = if self.source_tabs.is_empty() { text } else { programs::bind_formula(&text,0,0,&self.source_tabs,&ids,&names) };
                 all.push(DefinedName { name: n.name.clone(), text, tab });
             }
             if all.len() != wb.names.len() {
@@ -457,14 +478,41 @@ impl Imported {
         let (file_name, content) = self.tabs.first()?;
         let target = wb.tab(tab)?.name.clone();
         let file_names: Vec<String> = self.tabs.iter().map(|(n, _)| n.clone()).collect();
-        let content = if !target.eq_ignore_ascii_case(file_name) || self.tabs.len() > 1 {
+        let mut content = if !target.eq_ignore_ascii_case(file_name) || self.tabs.len() > 1 {
             let mut new_names = vec![String::new(); file_names.len()];
-            new_names[0] = target;
+            new_names[0] = target.clone();
             rename_content(content, &IndexNames(&file_names), &IndexNames(&new_names))
         } else {
             content.clone()
         };
-        Some(Op::ReplaceTab { tab, content: Box::new(content) })
+        self.bind_programs(&mut content, &[tab], std::slice::from_ref(&target));
+        let replace=Op::ReplaceTab { tab, content: Box::new(content) };
+        Some(match self.import_functions(wb, &[tab], &[target]) {
+            Some(functions) => Op::Batch {ops:vec![Op::SetFunctions {functions},replace]},
+            None => replace,
+        })
+    }
+
+    fn import_functions(&self, wb: &Workbook, ids: &[TabId], names: &[String]) -> Option<Vec<crate::javascript::Function>> {
+        if self.functions.is_empty() {return None;}
+        let mut all=wb.functions.clone();
+        for function in &self.functions {
+            let mut f=function.clone();
+            f.code=programs::bind_source(&f.code,&self.source_tabs,ids,names);
+            if !all.contains(&f) {all.push(f);}
+        }
+        Some(all)
+    }
+
+    fn bind_programs(&self, content: &mut TabContent, ids: &[TabId], names: &[String]) {
+        if self.source_tabs.is_empty() {return;}
+        if let Some(code)=&mut content.code {
+            code.code=programs::bind_source(&code.code,&self.source_tabs,ids,names);
+            code.inputs=code.inputs.iter().filter_map(|id|self.source_tabs.iter().position(|t|t.0==*id).and_then(|i|ids.get(i).copied())).collect();
+        }
+        for (c,col) in content.columns.iter_mut().enumerate() { for (r,text) in &mut col.formulas {
+            *text=programs::bind_formula(text,*r,c as u32,&self.source_tabs,ids,names);
+        } }
     }
 
     /// The defined names with their tabs mapped to ids (`ids[i]` is the id tab `i` got).
@@ -523,6 +571,7 @@ fn trim_fraction(s: &str) -> String {
 }
 
 /// A number rounded to 15 significant digits (what `number_text` shows), for formats that hold numbers.
+#[cfg(test)]
 pub(crate) fn round15(n: f64) -> f64 {
     if !n.is_finite() || n == 0.0 {
         return n;

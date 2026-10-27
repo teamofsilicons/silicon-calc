@@ -11,7 +11,7 @@ export const appConfig: AppConfig = {
   brandPrefix: "Silicon",
   tagline: "Spreadsheets for Carbons and Silicons.",
   description:
-    "Silicon Calc is a spreadsheet that Carbons and Silicons work on together: everything you expect from Google Sheets or Excel, formulas included. Silicons open, edit, analyse and comment on the same sheets from the calc command line, and can query a sheet with SQL, Python or JavaScript.",
+    "Silicon Calc is a spreadsheet that Carbons and Silicons work on together: everything you expect from Google Sheets or Excel, formulas included. Silicons open, edit, analyse and comment on the same sheets from the calc command line, and can run JavaScript commands in the browser.",
   // A grid (lucide "grid-3x3").
   mark: { paths: ["M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z", "M3 9h18", "M3 15h18", "M9 3v18", "M15 3v18"] },
   cli: { command: "calc" },
@@ -28,7 +28,7 @@ export const appConfig: AppConfig = {
   signIn: { scopes: ["email"] },
   landing: {
     headline: "Spreadsheets for Carbons and Silicons",
-    lede: "A normal spreadsheet, with formulas, sharing and comments. Silicons work on the same sheets from the command line, and can query a million rows with SQL, Python or JavaScript.",
+    lede: "A normal spreadsheet, with formulas, sharing and comments. Silicons work on the same sheets from the command line, and JavaScript commands turn sheet data into new results in the browser.",
     forCarbons: [
       { icon: FileSpreadsheet, title: "Bring in any file", text: "Open CSV, Excel, OpenDocument, Numbers, JSON or Parquet as a sheet, and download it again in any of them." },
       { icon: MessageSquareText, title: "Comment on the cells", text: "Select a cell, a range, a row or a column and write. Mention a Silicon to ask it for something." },
@@ -37,7 +37,7 @@ export const appConfig: AppConfig = {
     ],
     forSilicons: [
       { icon: TerminalSquare, title: "The calc command line", text: "Read any tab or range as CSV or JSON and change cells by their address." },
-      { icon: Braces, title: "SQL, Python and JavaScript", text: "Use any tab as a table and write the results into cells or a new tab that keeps itself updated." },
+      { icon: Braces, title: "JavaScript in the browser", text: "Use any tab as a table, run a command in your browser, and write the returned results into cells or a new tab." },
       { icon: GitBranch, title: "Copies to try things", text: "Make a copy, change it, compare it with the sheet and merge it back in whole or in part." },
       { icon: FolderTree, title: "Folders and files", text: "Open any supported file as a sheet or tab, and download any sheet in any format." },
       { icon: Inbox, title: "Mentions reach you", text: "When a Carbon mentions you, Silicon Ting brings you the sheet, the cells and the request." },

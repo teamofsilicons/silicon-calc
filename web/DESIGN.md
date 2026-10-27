@@ -1,17 +1,15 @@
 # The Silicon design system
 
-What the developer site (developers.teamofsilicons.com), the account site (accounts.teamofsilicons.com) and the store
-(apps.teamofsilicons.com) have in common, written down so every app's web frontend looks like part of the same
-family. The kit implements all of it; this page is the reasoning and the rules for what you add.
+Calc uses the neutral light palette from [Silicon UI](https://ui.teamofsilicons.com/) and
+[Paper Mono](https://paper.design/mono) throughout its interface, spreadsheet canvas and command editor.
+The page, panels and grid have white or neutral gray surfaces without a blue tint.
 
 ## Principles
 
-1. **One look, two modes.** Light and dark (or the device's), nothing else. Every colour is a token with a value in
-   both; a page never hard-codes a colour.
+1. **One light theme.** Calc stays light regardless of the device setting. Use semantic colour tokens.
 2. **Calm chrome, content first.** Bars and sidebars sit on the page colour with hairlines, not boxes. The page's own
    title is the loudest thing on screen.
-3. **Brand blue is where you act.** Filled blue is for the one primary action of a surface, the current item's
-   indicator and links. Never for decoration, never for two buttons side by side.
+3. **Charcoal actions and selections.** Primary actions, links and active edges use neutral ink; muted fills stay gray.
 4. **Every rounded surface is a squircle.** Controls, cards, chips, menus, photos: the same superellipse curve at a few
    sizes.
 5. **Borders, not shadows.** Things that rest on the page have a 1 px border; only floating layers (menus, dialogs,
@@ -24,43 +22,28 @@ family. The kit implements all of it; this page is the reasoning and the rules f
 
 Use the semantic tokens (`styles/tokens.css`), never the hex values.
 
-| Token | Light | Dark | For |
-| --- | --- | --- | --- |
-| `--background` | `#F7F8FA` | `#02040A` | the page |
-| `--surface` | `#FFFFFF` | `#0B0F18` | cards, panels, fields |
-| `--surface-raised` | `#FFFFFF` | `#121826` | menus, dialogs, popovers |
-| `--surface-muted` | `#EEF0F4` | `#1A2130` | hover fills, tracks, code chips |
-| `--foreground` | `#292929` | `#F7F8FA` | text, icons that matter |
-| `--text-secondary` | `#4C5260` | `#C2C8D3` | descriptions, secondary values |
-| `--text-muted` | `#5C6370` | `#9BA4B4` | hints, timestamps, placeholders |
-| `--border` / `-subtle` / `-strong` | `#E2E5EB` / `#EBEDF1` / `#CBD0D8` | `#1F2635` / `#161C28` / `#2F394B` | edges, dividers, hovered edges |
-| `--primary` (`-hover`, `-pressed`) | `#1F5FB8` | `#1F5FB8` | filled primary buttons (with `--primary-foreground`) |
-| `--accent` | `#1F5FB8` | `#6AA0EE` | indicators, selected states, focus edges |
-| `--accent-ink` | `#1F5FB8` | `#7DAEF4` | accent-coloured text (links, eyebrows) |
-| `--accent-subtle` | blue at 10 % | blue at 24 % | tinted fills (feature icons, Silicon markers) |
-| `--success`, `--warning`, `--danger` | `#18703F`, `#93560A`, `#B42318` | `#4CC38A`, `#E9B24F`, `#FF8A80` | status text and icons |
+| Token | Light | For |
+| --- | --- | --- |
+| `--background`, `--surface`, `--surface-raised` | `#FFFFFF` | page, panels, fields and floating surfaces |
+| `--surface-muted`, `--surface-pressed` | `#F8F8F8`, `#F1F1F1` | quiet fills and pressed states |
+| `--foreground` | `#0B0B0B` | text and primary actions |
+| `--text-secondary`, `--text-muted` | `#585858` | descriptions, hints and timestamps |
+| `--border`, `--border-subtle`, `--border-strong` | `#E9E9E9`, `#F3F3F3`, `#C4C4C4` | edges and dividers |
+| `--accent`, `--accent-strong` | `#353535`, `#1F1F1F` | selections, links and focus edges |
+| `--accent-subtle` | charcoal at 10% | neutral selected fills |
+| `--success`, `--warning`, `--danger` | `#007530`, `#9C6300`, `#CD1526` | status text and icons |
 
-Every text token clears 4.5:1 on every surface token in its mode (measured; see the comment in `tokens.css`). Keep it
-so: a new pair needs checking before it ships.
-
-An app with its own colour sets `appConfig.accent`. It becomes `--app-accent`, which tints the app's mark and the
-landing page's wash, and nothing else: actions, links and focus stay brand blue on every Silicon site.
-
-```css
-/* Do */
-.notice { --sq-fill: var(--surface-muted); color: var(--text-secondary); }
-.count[data-over] { color: var(--danger); }
-
-/* Don't: a colour that has no dark value, and blue as decoration */
-.notice { background: #eef0f4; color: #4c5260; }
-.sectionTitle { color: var(--primary); }
-```
+Small muted labels use Silicon UI's darker neutral-8 for legibility. Warning text uses its stronger amber.
+Chart series, formula references, collaborator colors and workbook formatting keep meaningful distinctions.
+The canvas palette in `components/sheet/grid/render.ts` matches the semantic tokens; update both together.
 
 ## Type
 
-Two faces. **BDO Grotesk** (self-hosted, SIL OFL; 400, 500, 600, 700) is the display face: page titles, section
-titles on the public pages, the wordmark, big numbers. Text uses the system face first (SF Pro on Apple devices, whose
-licence does not allow serving it) and BDO Grotesk where there is none.
+**Paper Mono v1.000**, self-hosted under SIL OFL 1.1, is the single interface typeface. The variable WOFF2
+covers weights 100–800; body, display and code tokens share it. The grid redraws after font loading so text
+measurements and cell editing agree. Explicit fonts in imported or formatted workbook cells remain intact.
+Static Paper Mono TTFs supply the generated social image. Font files and license provenance live under
+`public/fonts/paper-mono/v1.000/` and `assets/og/paper-mono/`.
 
 | Use | Size | Weight | Tracking, leading |
 | --- | --- | --- | --- |
@@ -69,7 +52,7 @@ licence does not allow serving it) and BDO Grotesk where there is none.
 | Title someone typed (`size="entity"`) | `clamp(1.75rem, 3.2vw, 2.5rem)` | 600 display | −0.025em, 1.08 |
 | Landing section title (h2) | `clamp(1.875rem, 1.35rem + 2vw, 2.75rem)` | 600 display | −0.03em, 1.08 |
 | Section title in the workspace (h2) | `--text-lg` 1.125rem | 500 text | −0.01em, 1.3 |
-| Body | `--text-base` 1rem | 400 | −0.01em, 1.4 (long reading 1.6) |
+| Body | `--text-base` 1rem | 400 | 0, 1.4 (long reading 1.6) |
 | Secondary text, table cells, buttons | `--text-sm` 0.875rem | 400 / 500 | 1.4 |
 | Labels, hints, badges | `--text-xs` 0.75rem | 500 | 1.4 |
 | Code | `--font-mono`, 0.8125 to 0.92em | 400 | 0, 1.7 in blocks |

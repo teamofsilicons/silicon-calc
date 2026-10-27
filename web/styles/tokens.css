@@ -1,78 +1,65 @@
-/*
- * The Silicon look for Calc, mapped onto Silicon UI's semantic tokens (components/silicon-ui/foundation.css, imported
- * first). One calm light theme and nothing else: no dark mode, no theme switch, nothing that follows the device's
- * setting (lib/theme.ts pins <html data-theme="light"> before the first paint).
- *
- * Brand: page #F7F8FA, text #292929, brand blue #1F5FB8 for primary actions and the current selection. Surfaces, borders
- * and muted text are cool neutrals derived from those.
- *
- * Contrast (WCAG 2.2, measured): every text token clears 4.5:1 on --background, --surface, --surface-raised,
- * --surface-muted and --accent-subtle. Lowest pairs: --warning 4.8:1 and --text-muted #5C6370 4.9:1 on the accent
- * tint over the page, --accent-ink #1F5FB8 5.4:1 on --surface-muted. Filled primary buttons are brand blue under white
- * text (6.2:1).
+/* Calc uses Silicon UI's light neutral palette: https://ui.teamofsilicons.com/.
+ * White page surfaces, gray chrome and charcoal actions; no blue background wash.
+ * Text uses neutral-8 rather than neutral-7 so small labels retain AA contrast.
+ * Paper Mono is self-hosted (styles/fonts.css), including the spreadsheet canvas.
  */
 :root, [data-theme="light"] {
   color-scheme: light;
-  --brand-blue: #1F5FB8;
-  --brand-light: #F7F8FA;
-  --brand-ink: #292929;
-
-  --background: #F7F8FA;
+  --background: #FFFFFF;
   --surface: #FFFFFF;
   --surface-raised: #FFFFFF;
-  --surface-muted: #EEF0F4;
-  --foreground: #292929;
-  --text-secondary: #4C5260;
-  --text-muted: #5C6370;
-  --border: #E2E5EB;
-  --border-subtle: #EBEDF1;
-  --border-strong: #CBD0D8;
+  --surface-muted: #F8F8F8;
+  --surface-pressed: #F1F1F1;
+  --foreground: #0B0B0B;
+  --text-secondary: #585858;
+  --text-muted: #585858;
+  --border: #E9E9E9;
+  --border-subtle: #F3F3F3;
+  --border-strong: #C4C4C4;
 
-  --accent: #1F5FB8;
-  --accent-strong: #174C96;
-  --accent-subtle: rgb(31 95 184 / .1);
+  --accent: #353535;
+  --accent-strong: #1F1F1F;
+  --accent-subtle: rgb(53 53 53 / .1);
   --accent-foreground: #FFFFFF;
-  --accent-ink: #1F5FB8;
+  --accent-ink: #353535;
 
-  --primary: #1F5FB8;
-  --primary-hover: #1B55A6;
-  --primary-pressed: #184C93;
+  --primary: #0B0B0B;
+  --primary-hover: #1D1D1D;
+  --primary-pressed: #383838;
   --primary-foreground: #FFFFFF;
 
-  --control-on: #1F5FB8;
+  --control-on: #1D1D1D;
   --control-glyph: #FFFFFF;
-  --control-track: #DDE1E8;
-  --control-track-hover: #D1D6DF;
+  --control-track: #DCDCDC;
+  --control-track-hover: #D1D1D1;
   --control-thumb: #FFFFFF;
   --control-thumb-on: #FFFFFF;
-  --control-thumb-shadow: 0 0 0 .5px rgb(16 24 40 / .08), 0 1px 2px rgb(16 24 40 / .16), 0 2px 6px rgb(16 24 40 / .07);
+  --control-thumb-shadow: 0 0 0 .5px rgb(0 0 0 / .07), 0 1px 2px rgb(0 0 0 / .14), 0 2px 6px rgb(0 0 0 / .06);
   --control-fill: var(--control-on);
   --control-on-subtle: color-mix(in oklab, var(--control-on) 10%, transparent);
   --focus-ring: transparent;
   --focus-outline: color-mix(in oklab, var(--accent) 60%, transparent);
 
-  --success: #18703F;
-  --warning: #93560A;
-  --danger: #B42318;
+  --success: #007530;
+  /* Silicon UI's stronger amber keeps warning text legible on muted surfaces. */
+  --warning: #9C6300;
+  --danger: #CD1526;
 
-  /* Cool, soft shadows. Only floating layers use them. */
-  --shadow-resting: 0 1px 2px rgb(16 24 40 / .05);
-  --shadow-raised: 0 6px 18px rgb(16 24 40 / .07), 0 1px 3px rgb(16 24 40 / .04);
-  --shadow-floating: 0 20px 48px rgb(16 24 40 / .12), 0 3px 10px rgb(16 24 40 / .05);
+  --shadow-resting: 0 1px 2px rgb(0 0 0 / .035);
+  --shadow-raised: 0 6px 18px rgb(0 0 0 / .065), 0 1px 3px rgb(0 0 0 / .035);
+  --shadow-floating: 0 20px 48px rgb(0 0 0 / .105), 0 3px 10px rgb(0 0 0 / .045);
 
+  /* Data series stay distinguishable from each other. */
   --series-1: #1F5FB8; --series-2: #7A4FC4; --series-3: #B86E0F; --series-4: #17806B;
-
-  /* Profile photos are 30 % squircles, never circles. */
   --avatar-radius: 30%;
   --avatar-corner-shape: squircle;
 
-  /* Type. SF Pro is the system face on Apple devices (its licence does not allow serving it), so text asks for the
-     system first; BDO Grotesk (styles/fonts.css) is the display face and the text face everywhere else. */
-  --font-display: "BDO Grotesk", -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif;
-  --font-body: -apple-system, BlinkMacSystemFont, "SF Pro Text", "BDO Grotesk", system-ui, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  --font-display: "Paper Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --font-body: var(--font-display);
+  --font-mono: var(--font-display);
   --font-serif: var(--font-display);
   --tracking-display: -.025em;
+  --tracking-body: 0;
 
   /* The 4 px spacing scale the layout primitives use (Silicon UI components use its semantic scale). */
   --space-1: .25rem; --space-2: .5rem; --space-3: .75rem; --space-4: 1rem;
@@ -87,8 +74,8 @@
   /* The kit's squircles (styles/squircle.css) take the radius as it is: Silicon UI's radii are already squircle-sized. */
   --sq-k: 1;
 
-  --overlay: rgb(2 4 10 / .34);
-  --dot-color: rgb(41 41 41 / .1);
+  --overlay: rgb(3 3 3 / .46);
+  --dot-color: rgb(0 0 0 / .1);
 
   /* Page chrome. */
   --page-max: 1080px;

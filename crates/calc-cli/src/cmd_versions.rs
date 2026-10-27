@@ -348,7 +348,7 @@ mod tests {
             kind: VersionKind::Edit,
         };
         let out = render_versions(&[v]);
-        assert!(out.lines().nth(1).unwrap().starts_with("37–42"), "{out}");
+        assert!(out.lines().nth(1).unwrap().trim_start().starts_with("37–42 "), "{out}");
         assert!(out.contains("Sent to the client"), "{out}");
     }
 }

@@ -6,7 +6,8 @@
  * Components read it with useController (lib/sheet/react.ts); the canvas redraws on `subscribe`.
  */
 import { ApiError } from "../errors";
-import type { Account, Edit, Style, StylePatch, Tab } from "../calc/types";
+import type { Account, CellControl, Edit, Style, StylePatch, Tab } from "../calc/types";
+import { checkboxState, checkboxValue, literalInput } from "./cell-controls";
 import { a1, cellName, colName, formatRange, MAX_COLS, MAX_ROWS, parseCell, parseRange, quoteTab, type Rect, rectsIntersect, splitTab } from "./address";
 import { parseHTMLTable, parseTSV, toHTML, toTSV, type HtmlCell } from "./clipboard";
 import { canPointAt, isFormula, partialFunctionAt, referenceText, references, replaceText, shiftFormula, tokenize, type RefToken } from "./formula";
@@ -78,6 +79,7 @@ export class SheetController {
   focusGrid: (() => void) | null = null;
 
   private readonly listeners = new Set<Listener>();
+  private readonly tabSelections = new Map<number, Selection>();
 
   constructor(session: SheetSession, activeTab?: number) {
     this.session = session;
@@ -88,6 +90,8 @@ export class SheetController {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
+
+  setNoticeHandler(handler: (notice: Notice) => void): void { this.notice = handler; }
 
   notify(): void {
     this.revision++;
@@ -157,8 +161,8 @@ export class SheetController {
     return this.inputAt(row, col);
   }
 
-  inputAt(row: number, col: number): string {
-    const data = this.data;
+  inputAt(row: number, col: number, tab = this.activeTab): string {
+    const data = this.session.tab(tab);
     const pending = data?.pendingAt(row, col);
     if (pending) return pending.input;
     const cell = data?.get(row, col);
@@ -208,12 +212,16 @@ export class SheetController {
   /* ---- tabs ------------------------------------------------------------------------------------------------------ */
 
   openTab(id: number): void {
-    if (id === this.activeTab) return;
+    if (id === this.activeTab || !this.session.tab(id)) return;
     if (this.editor.open && !this.isPointing()) this.commit("none");
+    // A formula being pointed at still owns the original tab's selection. Do not
+    // store it as the selection of every tab visited while choosing a reference.
+    if (!this.editor.open || this.activeTab === this.editor.tab) this.tabSelections.set(this.activeTab, this.selection);
+    for (const tab of this.tabSelections.keys()) if (!this.session.tab(tab)) this.tabSelections.delete(tab);
     this.activeTab = id;
-    if (!this.editor.open) this.selection = cellSelection(0, 0);
+    if (!this.editor.open) this.selection = this.tabSelections.get(id) ?? cellSelection(0, 0);
     this.notify();
-    this.reveal?.(0, 0);
+    this.session.setPresence(id, this.apiRange(this.selection.range));
   }
 
   /* ---- selection ------------------------------------------------------------------------------------------------- */
@@ -440,9 +448,7 @@ export class SheetController {
     const { row, col, tab } = this.editor;
     this.editor = CLOSED;
     if (tab !== this.activeTab) this.activeTab = tab;
-    this.selection = selectCell(this.grid(), row, col);
-    this.notify();
-    this.reveal?.(row, col);
+    this.setSelection(selectCell(this.grid(), row, col));
   }
 
   /** True while choosing a reference with the pointer or arrows. */
@@ -589,12 +595,11 @@ export class SheetController {
     if (!this.editor.open) return;
     const { row, col, tab } = this.editor;
     const input = this.editor.text;
-    const original = this.inputAt(row, col);
+    const original = this.inputAt(row, col, tab);
     this.editor = CLOSED;
     if (tab !== this.activeTab) this.activeTab = tab;
     const target = this.selection;
-    this.selection = fillSelection ? target : selectCell(this.grid(), row, col);
-    this.notify();
+    this.setSelection(fillSelection ? target : selectCell(this.grid(), row, col), false);
     const data = this.session.tab(tab);
     if (fillSelection && isMulti(target, this.grid())) {
       const cells: Array<{ a: string; input: string }> = [];
@@ -664,6 +669,27 @@ export class SheetController {
     this.style({ num_fmt: code });
   }
 
+  setCellControl(control: CellControl | null): Promise<boolean> {
+    return this.send([{ type: "style", tab: this.activeTab, range: this.range(), patch: { control } }]);
+  }
+
+  /** Uses literal values: a dropdown option starting with '=' must never execute as a formula. */
+  setControlValue(row: number, col: number, value: boolean | string | number): void {
+    const cell = this.data?.get(row, col);
+    if (!this.canEdit || cell?.f || cell?.spill) return;
+    const tab = this.activeTab;
+    void this.send([{ type: "values", tab, at: cellName(row, col), rows: [[value]] }], [{ tab, row, col, input: literalInput(value) }]);
+  }
+
+  toggleCheckbox(row = this.selection.active.row, col = this.selection.active.col): boolean {
+    const cell = this.data?.get(row, col);
+    const control = cell?.s ? this.session.styles.get(cell.s)?.control : undefined;
+    if (control?.kind !== "checkbox") return false;
+    const state = checkboxState(control, cell?.v, this.data?.pendingAt(row, col)?.input);
+    this.setControlValue(row, col, checkboxValue(control, state !== true));
+    return true;
+  }
+
   /** Borders: all, outer, inner, top, bottom, left, right, none. */
   borders(kind: "all" | "outer" | "inner" | "top" | "bottom" | "left" | "right" | "none", border: { style: "thin" | "medium" | "thick" | "dashed" | "dotted" | "double"; color?: string } = { style: "thin", color: "#000000" }): void {
     const r = this.selection.range;
@@ -685,6 +711,15 @@ export class SheetController {
       }
     }
     if (edits.length) void this.send(edits);
+  }
+
+  mergeBy(axis: "rows" | "cols"): void {
+    const r = this.selection.range;
+    const count = axis === "rows" ? r.r2-r.r1+1 : r.c2-r.c1+1;
+    if (count > 1000) { this.notice({kind:"error",title:"Select at most 1,000 rows or columns to merge at once."}); return; }
+    const edits: Edit[] = (this.data?.merges.filter(m=>rectsIntersect(m,r)) ?? []).map(m=>({type:"unmerge",tab:this.activeTab,range:a1(m)}));
+    for(let i=0;i<count;i++) edits.push({type:"merge",tab:this.activeTab,range:a1(axis === "rows" ? {...r,r1:r.r1+i,r2:r.r1+i} : {...r,c1:r.c1+i,c2:r.c1+i})});
+    void this.send(edits);
   }
 
   merge(): void {
@@ -833,13 +868,11 @@ export class SheetController {
     void this.send([{ type: "delete_tab", tab: id }]).then(async ok => {
       if (!ok) return;
       await this.session.refreshTabs().catch(() => undefined);
+      this.tabSelections.delete(id);
+      if (this.editor.open && this.editor.tab === id) this.editor = CLOSED;
       if (this.activeTab === id) {
         const next = this.session.tabs[Math.max(0, index - 1)] ?? this.session.tabs[0];
-        if (next) {
-          this.activeTab = next.id;
-          this.selection = cellSelection(0, 0);
-          this.notify();
-        }
+        if (next) this.openTab(next.id);
       }
     });
   }
@@ -958,7 +991,7 @@ export class SheetController {
       for (const [id, rects] of byStyle) {
         const style = this.session.styles.get(id);
         if (!style) continue;
-        for (const rect of rects.slice(0, 5_000)) edits.push({ type: "style", tab, range: a1(rect), patch: { clear: true, ...style } as StylePatch });
+        for (const rect of rects.slice(0, 5_000)) edits.push({ type: "style", tab, range: a1(rect), patch: { clear: true, ...style, control: style?.control ?? null } as StylePatch });
       }
       if (own.cut) {
         const source = own.range;

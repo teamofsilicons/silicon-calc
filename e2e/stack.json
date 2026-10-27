@@ -1,6 +1,6 @@
 {
   "_comment": "The local stack for Silicon Calc (scripts/accounts-stack.sh writes it): Silicon Accounts with its mocks, Calc's apps on it (calc, ting) with their development-only secrets, and where the dev service, web app and mock Ting run. Local and fake.",
-  "written_at": "2026-10-17T03:39:51.538Z",
+  "written_at": "2026-10-25T09:31:16.881Z",
   "accounts": {
     "public_url": "http://localhost:9990",
     "api_url": "http://127.0.0.1:9989",

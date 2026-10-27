@@ -3,4 +3,5 @@
 pub mod ast;
 pub mod eval;
 pub mod functions;
+pub mod identity;
 pub mod parse;

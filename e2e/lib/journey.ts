@@ -7,8 +7,10 @@
 //   });
 //
 // A `step` is something later steps need: when it fails, the rest of the journey is skipped (and says why). A
-// `check` stands on its own: when it fails, it is recorded and the journey goes on. `j.note()` adds a line to the
-// step that is running (what was measured, which fallback was used). `j.cleanup()` runs at the end, always.
+// `check` stands on its own: when it fails, it is recorded and the journey goes on. `j.part('…')` starts a part of
+// the journey that doesn't need the parts before it (beyond the first, unnamed one): a step that fails skips only the
+// rest of its own part. `j.note()` adds a line to the step that is running (what was measured, which fallback was
+// used). `j.cleanup()` runs at the end, always.
 //
 // e2e/journeys/run.ts runs journeys and prints and saves what passed and what failed.
 
@@ -16,6 +18,8 @@ export type StepStatus = 'pass' | 'fail' | 'skip';
 
 export interface StepResult {
   name: string;
+  /** The part of the journey it belongs to ('' for the first, unnamed one). */
+  part: string;
   /** false: a check (its failure doesn't stop the journey). */
   required: boolean;
   status: StepStatus;
@@ -38,6 +42,7 @@ export interface JourneyResult {
 
 interface StepDef {
   name: string;
+  part: number;
   required: boolean;
   timeoutMs: number;
   run: () => Promise<unknown>;
@@ -51,16 +56,23 @@ export interface StepOptions {
 export class Builder {
   readonly steps: StepDef[] = [];
   readonly cleanups: Array<() => Promise<unknown>> = [];
+  /** Part titles by number; part 0 is the journey's first, unnamed part, which every other part needs. */
+  readonly parts: string[] = [''];
   current: StepResult | null = null;
 
-  /** Something later steps need: if it fails, the rest of the journey is skipped. */
+  /** Something later steps need: if it fails, the rest of its part (or of the journey, in the first part) is skipped. */
   step(name: string, run: () => Promise<unknown>, options: StepOptions = {}): void {
-    this.steps.push({ name, required: true, timeoutMs: options.timeoutMs ?? 120_000, run });
+    this.steps.push({ name, part: this.parts.length - 1, required: true, timeoutMs: options.timeoutMs ?? 120_000, run });
   }
 
   /** A check on its own: if it fails, the journey goes on. */
   check(name: string, run: () => Promise<unknown>, options: StepOptions = {}): void {
-    this.steps.push({ name, required: false, timeoutMs: options.timeoutMs ?? 120_000, run });
+    this.steps.push({ name, part: this.parts.length - 1, required: false, timeoutMs: options.timeoutMs ?? 120_000, run });
+  }
+
+  /** Starts a part that needs only the first part of the journey, not the parts between. */
+  part(title: string): void {
+    this.parts.push(title);
   }
 
   /** Runs at the end of the journey, whatever happened. */
@@ -126,12 +138,19 @@ export async function runJourney(name: string, j: Journey): Promise<JourneyResul
     console.log(`  FAIL  ${result.error}`);
     return result;
   }
-  let stoppedBy: string | null = null;
+  // Which required step stopped each part (part 0 stops them all).
+  const stoppedBy = new Map<number, string>();
+  let shownPart = 0;
   for (const def of b.steps) {
-    const step: StepResult = { name: def.name, required: def.required, status: 'skip', ms: 0, notes: [] };
+    const step: StepResult = { name: def.name, part: b.parts[def.part] ?? '', required: def.required, status: 'skip', ms: 0, notes: [] };
     result.steps.push(step);
-    if (stoppedBy) {
-      step.error = `not run: "${stoppedBy}" failed`;
+    if (def.part !== shownPart) {
+      shownPart = def.part;
+      console.log(`  -- ${b.parts[def.part]}`);
+    }
+    const stopper = stoppedBy.get(0) ?? stoppedBy.get(def.part);
+    if (stopper) {
+      step.error = `not run: "${stopper}" failed`;
       result.skipped++;
       console.log(`  skip  ${def.name}`);
       continue;
@@ -147,7 +166,7 @@ export async function runJourney(name: string, j: Journey): Promise<JourneyResul
       step.error = describe(error);
       result.failed++;
       result.error ??= `${def.name}: ${step.error}`;
-      if (def.required) stoppedBy = def.name;
+      if (def.required) stoppedBy.set(def.part, def.name);
     }
     step.ms = Math.round(performance.now() - t0);
     b.current = null;

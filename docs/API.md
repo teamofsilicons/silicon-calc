@@ -42,8 +42,8 @@ the web app. Every surface implements exactly this; change it here first.
 // Tab
 {"id": 1, "name": "Tab 1", "index": 0, "rows": 1000, "cols": 26, "used": "A1:F120" | null,
  "frozen_rows": 0, "frozen_cols": 0, "color": null,
- "code": null | {"language": "sql" | "python" | "javascript", "code": "…", "inputs": [2], "run_by": Account,
-                 "run_at": "…", "keep_updated": true}}
+ "code": null | {"language": "javascript", "code": "…", "inputs": [2], "run_by": Account,
+                 "run_at": "…"}}
 // rows/cols: the grid size to show = max(used extent + 1, 1000 rows / 26 columns).
 
 // Folder
@@ -67,7 +67,7 @@ Tabs in requests may be named by id (`1`) or by name (`"Sales"`). Ranges are A1 
 | --- | :-: | :-: | :-: | :-: |
 | read cells, versions, comments, download, compare | ✓ | ✓ | ✓ | ✓ |
 | comment, reply, react, resolve | ✓ | ✓ | ✓ | |
-| edit, import tabs, run code, make/merge/delete copies, restore versions, name versions | ✓ | ✓ | | |
+| edit, import tabs, save command results, make/merge/delete copies, restore versions, name versions | ✓ | ✓ | | |
 | invite and change roles (never above their own), public link | ✓ | ✓ | | |
 | protections, move to trash, transfer, delete forever | ✓ | | | |
 
@@ -78,18 +78,23 @@ Access through a folder is inherited; the higher role wins. A public sheet gives
 
 - `GET /healthz` → `200 ok` (no auth, not under /v1).
 - `GET /v1/meta` → `{"app_id": "calc", "version": "0.1.0", "accounts_url": "…", "limits": {"max_rows": 10485760,
-  "max_cols": 16384, "max_upload_bytes": 524288000, "max_cells_per_edit": 200000, "code_timeout_seconds": 60}}`.
+  "max_cols": 16384, "max_upload_bytes": 524288000, "max_cells_per_edit": 200000, "browser_command_timeout_seconds": 60, "conversion_timeout_seconds": 60}}`.
+  The browser enforces the command timeout; the service enforces the separate trusted conversion timeout.
 - `GET /v1/me` → `{"account": Account}`.
 - `GET /v1/accounts/lookup?id=c:ada` → `Account` (resolves an id for sharing pickers; 404 when no such account).
 
 ## Sheets and folders
 
-- `GET /v1/sheets?scope=mine|shared|trash&folder={id}&q={text}&cursor={c}&limit={n}` →
-  `{"sheets": [Sheet], "folders": [Folder], "next_cursor": null}`. `mine` without `folder` is the top level.
+- `GET /v1/sheets?scope=all|mine|shared|trash&folder={id}&q={text}&cursor={c}&limit={n}` →
+  `{"sheets": [Sheet], "folders": [Folder], "next_cursor": null}`. `mine` (the API default) without `folder` is
+  your top level. `all`, used by the Sheets home page, combines that with sheets and folders shared with you,
+  preserving each item's role and sorting sheets together by last update. Search includes accessible items
+  inside folders; results are deduplicated and exclude trash. `shared` remains the shared-only view.
 - `POST /v1/sheets` `{"title": "…", "folder_id"?}` → 201 `Sheet` (one empty tab, "Tab 1"). Title defaults to
   "Untitled sheet".
 - `POST /v1/sheets/import?filename={name}&title={t}&folder_id={f}` with the file as the raw body (any content
-  type) → 201 `Sheet`. Formats: `.csv .tsv .xlsx .xls .ods .numbers .json .parquet`.
+  type) → 201 `Sheet` with tabs and an import operation at version 1. Formats:
+  `.csv .tsv .xlsx .xls .ods .numbers .json .parquet`. Optional `warnings` describes file content that could not be kept.
 - `GET /v1/sheets/{sheet}` → `Sheet` with `tabs`.
 - `PATCH /v1/sheets/{sheet}` `{"title"?, "folder_id"?}` → `Sheet`.
 - `DELETE /v1/sheets/{sheet}` → 204: moves it to the trash (owner).
@@ -194,7 +199,9 @@ A write to a protected range answers 403 `protected` naming the protection. A fo
 
 ### Live
 
-- `GET {line}/events?since={version}` → `text/event-stream`. Events (each `data:` is JSON):
+- `GET {line}/events?since={version}` → `text/event-stream` (SSE). `Last-Event-ID` is used when `since` is absent.
+  Change events carry the version as their SSE id; only workbook changes are replayed on reconnect.
+  Events (each `data:` is JSON):
   - `change`: `{"version", "by": Account, "at", "changes": [Change], "cells": [Cell…]}` — `cells` holds the new
     contents of up to 2,000 changed cells (same shape as the cells answer), otherwise it is omitted and viewers
     reload the ranges in `changes`. Events since `since` are replayed first (up to 1,000; beyond that a `reset`
@@ -205,42 +212,88 @@ A write to a protected range answers 403 `protected` naming the protection. A fo
   - `ping` every 20 seconds.
 - `POST {line}/presence` `{"tab": 1, "range": "B2", "client_id": "…"}` → 204 (expires after 45 seconds).
 
-## Code
+## Browser commands
+
+Commands use JavaScript only and execute in the browser. The service never evaluates submitted source.
+The browser reads input cells through versioned routes, previews locally, then saves the materialized result:
 
 - `POST {line}/run` →
 
 ```jsonc
-// request
-{"language": "sql" | "python" | "javascript", "code": "select region, sum(amount) from Sales group by 1",
- "into": null                                   // just answer
-       | {"new_tab": "By region"}               // a new tab made by this code
-       | {"tab": 3, "at": "A1"},                // write the result into an existing tab
- "keep_updated": false}                         // with new_tab: rerun when an input tab changes
+// request: all top-level fields required
+{"code": "return await calc.tab('Sales');", "base_version": 43,
+ "inputs": [2], "columns": ["region", "amount"], "rows": [["EU", 1200.5]],
+ "into": {"new_tab": "By region"}
+       // or {"tab": 3, "at": "A1"}
+       // or {"tab": 3, "at": "A1", "replace": true}
+}
 // answer
-{"columns": ["region", "sum(amount)"], "rows": [["EU", 1200.5], …], "row_count": 4, "truncated": false,
- "stdout": "", "stderr": "", "duration_ms": 120, "version": 44 | null, "tab": Tab | null}
+{"columns": ["region", "amount"], "rows": [["EU", 1200.5]], "row_count": 1, "truncated": false,
+ "stdout": "", "stderr": "", "duration_ms": 0, "version": 44, "tab": Tab}
 ```
-  `rows` holds at most 1,000 rows (`truncated` says if there were more; written results are always complete).
-  - **SQL** (DuckDB): every tab is a table named as the tab is (quote names with spaces: `"By region"`); its first
-    row gives the column names. Read only.
-  - **Python**: `import calc` is ready: `calc.tab("Sales")` → pandas DataFrame (first row = columns),
-    `calc.tabs()` → names, `calc.cell("Sales!B2")` → value, `calc.sql("select …")` → DataFrame. The result is
-    `calc.result(df_or_rows)` or a variable named `result`; `print` goes to `stdout`. pandas and numpy are there.
-  - **JavaScript**: `calc.tab("Sales")` → array of row objects, `calc.rows("Sales")` → arrays, `calc.cell(…)`,
-    `calc.sql(…)`; the result is what the code `return`s (top-level `return` is allowed) or `calc.result(…)`.
-  - Code runs with no network and no files outside its own scratch space, for at most 60 seconds and 2 GB.
-    A failure answers 422 `code_failed` with `details: {"stderr", "line"?}`.
-- `POST {line}/tabs/{tab}/rerun` → same answer as run: reruns a code-made tab as the caller.
-- `PATCH {line}/tabs/{tab}/code` `{"keep_updated": bool}` → `Tab`.
+
+`base_version` must match the current line version exactly. The commit checks it atomically before writing;
+a changed input snapshot returns 409 `conflict` and leaves the sheet unchanged. The caller needs editor or
+owner access, and existing protected ranges remain enforced. `inputs` contains existing tab IDs read by the
+browser; source text and inputs are metadata, not proof of how the result was computed.
+
+Each row must match `columns`. Cells accept only null, booleans, finite numbers and strings; strings are
+literal values, including strings beginning with `=`. Dates are ISO strings. A result has at least one column,
+at most 200,000 cells including its header, at most 16 MiB of scalar/header data, and at most 1 MiB of source.
+The complete JSON request also has the service-wide 16 MiB body limit.
+The response includes at most 1,000 rows; the saved result is complete. `stdout`, `stderr` and `duration_ms`
+are retained as empty/zero response fields because the server performs no command execution.
+
+`new_tab` creates a tab with the header, results and JavaScript metadata. An existing `tab` with `at` writes
+that rectangle. `replace: true` replaces the tab and its command metadata and must start at A1. A browser
+rerun reads a fresh snapshot, executes locally and submits this replacement form. There are no server rerun,
+automatic-update or source execution endpoints. Legacy request fields `language` and `keep_updated` and all
+unknown request/destination fields are rejected. Old saved source metadata can remain in history, but it is
+never executed by the service.
 
 ## Files
 
-- `POST {line}/tabs/import?filename={name}&mode=new_tab|replace&tab={tab}` raw body → `{"version", "tabs": [Tab]}`
-  (every tab of the file becomes a tab; `replace` replaces `tab`'s contents with the file's first tab).
-- `GET {line}/download?format=xlsx|xls|ods|numbers|csv|tsv|json|parquet|pdf&tab={tab}&version={v}` → the file
+The web app uses durable imports. These are account-owned jobs; no authentication tokens are retained:
+
+- `PUT /v1/imports/{uuid}` with `{filename,size,title?,folder_id?,sheet?,copy?}` creates an upload, or returns the existing job for the same id and request. Omit `sheet` to create a new workbook; otherwise the file adds tabs to that sheet/copy.
+- `POST /v1/imports/{uuid}/chunks/{index}` uploads a raw chunk of the returned `chunk_size` (1 MiB), except the final shorter chunk. Identical retries succeed; changing an acknowledged chunk is rejected.
+- `POST /v1/imports/{uuid}/start` verifies all bytes have arrived and queues processing. The request returns immediately; processing survives browser closure and service restarts.
+- `GET /v1/imports` lists this account's undismissed imports. `GET /v1/imports/{uuid}` reads one job. Answers contain `id`, `request`, `state`, `updated_at` (Unix milliseconds), `chunks` (acknowledged indexes), `uploaded` (bytes), `chunk_size`, `result`, and `error`. The web panel shows active jobs and completed/failed results from the last two minutes; older receipts remain available through the API.
+- States: `uploading`, `queued`, `processing`, `completed`, `failed`, `cancelled`. Completed results contain `{sheet,copy,tabs,version,warnings}`. A new workbook starts at version 0 with the imported data; adding tabs to an existing workbook records one undoable import version.
+- `POST /v1/imports/{uuid}/retry` retries a failed conversion using the retained upload. `DELETE /v1/imports/{uuid}` cancels an uploading/queued job or dismisses a completed/failed job. Processing jobs finish in the background and cannot be cancelled mid-commit.
+
+The browser retains source files in account-scoped IndexedDB until the service owns the complete upload. Refreshing or reopening Calc resumes missing chunks; a Web Lock coordinates browser tabs. If local storage is unavailable, the progress panel explains that Calc must stay open until upload completes. Already uploaded jobs are independent of browser storage. Deleting browser data can require selecting the original file again; acknowledged chunks are verified when reselecting. Original upload blobs are released after completion or cancellation. Failed sources remain until retry or dismissal.
+
+
+- `POST {line}/tabs/import?filename={name}&mode=new_tab|replace&tab={tab}` raw body →
+  `{"version", "tabs": [Tab], "warnings": [string]}`. `tabs` contains all resulting tabs in the line.
+  Every tab of the file becomes a tab; `replace` replaces `tab`'s contents with the file's first tab.
+- `GET {line}/download?format=xlsx|ods|pdf|html|csv|tsv|xls|numbers|json|parquet&tab={tab}&version={v}` → the file
   (`Content-Disposition: attachment; filename="<title>.<ext>"`). Formats holding one tab use `tab` (default the
   first). `json` is `{"tabs": [{"name", "rows": [[…]]}]}` of shown values... with `formulas: true` cells are
   `{"v", "f"}`.
+
+The sheet's Download menu offers XLSX, ODS, PDF, HTML, CSV and TSV. XLSX/ODS/PDF/HTML export every tab;
+CSV and TSV export the active tab's calculated values. The CLI and API can select one tab with `tab`.
+XLSX and ODS keep ordinary supported spreadsheet formulas with cached results. JavaScript cells and
+formulas calling custom functions export as calculated values, including every cell of an array result;
+references to those spill ranges become ordinary ranges. Pending JavaScript calculations must finish before download.
+
+XLSX and ODS also carry inert, versioned Calc metadata in `silicon-calc/programs.xml`: original JavaScript
+formulas, active function definitions, and saved command sources with their input tabs. Direct reimport restores
+those definitions and rerunnable analyses inside Calc's existing browser sandbox. Original tab identities and names
+are restored for a new sheet; imports into existing sheets bind literal script tab references to the imported tabs.
+Conflicting function definitions fail the import rather than replace existing code. Outputs edited outside Calc
+remain edited values with an import warning instead of being overwritten with the old formula.
+Excel and Google Sheets do not execute this metadata; importing or resaving through another app may discard it.
+The metadata is source preservation for direct reimport, not a full backup of permissions, history or every format feature.
+HTML is a self-contained, escaped table view of calculated values and basic cell formatting, with no executable scripts.
+
+XLS and ODS imports and XLS/ODS/PDF downloads require LibreOffice on the service. Numbers defaults to
+sandboxed `numbers-parser`, whose writer cannot preserve formulas and returns a conversion error when they
+are present. The optional macOS native Numbers bridge preserves formulas through XLSX and requires an
+explicit desktop opt-in; see [`runner/README.md`](../runner/README.md) for its security and resource boundary.
+PDF and HTML are download-only. Conversion failures answer 422 `code_failed` with converter output in `details`.
 
 ## Versions
 
@@ -265,14 +318,22 @@ A write to a protected range answers 403 `protected` naming the protection. A fo
 - `POST {line}/copies` `{"name"}` → 201 `Copy`: a copy of that line as it is now (a copy of a copy nests).
 - `PATCH /v1/sheets/{sheet}/copies/{copy}` `{"name"}`; `DELETE /v1/sheets/{sheet}/copies/{copy}` → 204 (status
   `deleted`; its history stays readable).
-- `GET /v1/sheets/{sheet}/copies/{copy}/compare?limit=` → `{"diff": WorkbookDiff (parent at fork → copy now),
-  "conflicts": [Conflict], "parent_changed": true}`.
+- `GET /v1/sheets/{sheet}/copies/{copy}/compare?limit=` → `{"diff": WorkbookDiff (accepted source baseline → copy now),
+  "conflicts": [Conflict], "parent_changed": bool}`. The initial baseline is the parent at the fork; later
+  comparisons use the accepted-source snapshot saved by merges. `parent_changed` compares the parent's current
+  version with the version accepted by the last merge (or the fork version before the first merge).
 - `POST /v1/sheets/{sheet}/copies/{copy}/merge` `{"tabs"?: [ids], "range"?: {"tab", "range"}, "resolutions"?:
   [{"tab", "a": "B2", "take": "copy"|"sheet"}], "default"?: "copy"|"sheet", "dry_run"?: false}` → `{"version",
   "cells_taken", "conflicts": [Conflict], "tabs_added", "tabs_removed", "rows_added", "rows_removed"}`. Merges into
   the copy's parent; the copy stays open unless `"close": true`.
   Conflict: `{"tab", "tab_name", "a", "base": Summary, "sheet": Summary, "copy": Summary, "taken": "copy"|"sheet"}`
   where Summary is `{"value"?: Value, "formula"?: "=…", "style"?: Style}`.
+  An accepted merge records the selected source changes and their stable-id mappings into the parent. Partial
+  merges advance only the selected portion of that baseline; unselected changes remain available. Resolving a
+  conflict with `"sheet"` consumes that source change too, so the next compare does not offer it again. The
+  original fork remains in history. The parent edit and receipt update commit together only if the parent
+  version, copy head and receipt revision still match; otherwise the merge answers 409 `conflict` and should be
+  compared and retried. A dry run does not advance the baseline.
 
 ## Comments
 
@@ -300,6 +361,19 @@ A write to a protected range answers 403 `protected` naming the protection. A fo
 
 ## Notifications (Silicon Ting)
 
+Notification delivery requires the recipient's explicit consent in Calc's **Notifications** account setting.
+All three routes require a signed-in account and act only on that account:
+
+- `GET /v1/me/notifications` → `{"enabled": boolean}` queries the current Calc grant in Ting. It does not enable delivery.
+- `POST /v1/me/notifications` with `{}` → `{"enabled": true}` is the explicit Enable action. Calc exchanges the
+  caller's Accounts access token for a User verification proof scoped to Ting's `subscriptions.register`, then registers that recipient.
+- `DELETE /v1/me/notifications` → `{"enabled": false}` revokes the caller's Calc grant. It does not change other apps' grants.
+
+Status queries and revocation use Calc App verification proofs with `subscriptions.read` and `subscriptions.revoke` respectively.
+An unavailable or unconfigured service returns `503 unavailable`, not an assumed disabled state. No proof, token, or grant ID is
+exposed to the browser. Enabling a grant does not change Ting's mute preferences or opt into required delivery. The Calc app author
+must register the six types below in Ting before delivery can succeed.
+
 Calc sends every notification through Silicon Ting and never its own. Each ting body:
 `{"type", "for": "<recipient account uuid>", "key": "<unique>", "data": {…}, "metadata": {}}` with data carrying
 `{"sheet": {"id", "title"}, "copy": {"id","name"}|null, "tab": {"id","name"}, "range", "quote", "thread_id",
@@ -318,3 +392,39 @@ Calc sends every notification through Silicon Ting and never its own. Each ting 
 
 - `GET /v1/search?q={text}&limit=` → `{"results": [{"sheet": Sheet, "matches": [{"tab", "tab_name", "a",
   "text"}]}]}`: titles and cell text of every sheet the caller can read.
+
+
+### Optional email requirement for public sheets
+
+`PUT /v1/sheets/{sheet}/public` accepts `require_email` (boolean, default false). Only the owner may change it. Its value is included in sheet and sharing responses. Private sheets keep their existing account permissions. The setting is remembered when a public link is switched off.
+
+With a public link and this option enabled, every non-owner content request needs either the signed-in account's email or a guest viewing receipt. A missing receipt answers `403 email_required`. This covers copies, history, downloads and live streams; changing the policy rechecks existing readers. Search omits gated content until the requirement is met.
+
+`POST /v1/sheets/{sheet}/visits` accepts `{ "email": "reader@example.com" }` without sign-in. The address is syntax-checked, not verified, and never grants account identity, membership, commenting or editing. If the caller has an account email, Calc uses that instead. Otherwise the response contains an opaque `view_grant`; API callers send it as `x-calc-view-grants`. The browser proxy keeps it in a per-file HttpOnly cookie and returns only `{ "ok": true }`. Receipts expire after 30 days and become invalid when public access or the requirement changes.
+
+`GET /v1/sheets/{sheet}/viewers?offset=0` is owner-only. It returns `viewers`, `total`, and `next_offset`, in pages of 50 ordered by latest view. Each viewer has `email`, `email_source` (`account` or `entered`), `first_viewed_at`, and `last_viewed_at`. Repeated reads are grouped; last view is refreshed at most once a minute. The owner is excluded. History is collected while the requirement is enabled and remains available when it is turned off; prior anonymous views cannot be identified.
+# JavaScript functions and formatting (0.2)
+
+The complete browser guide is `/docs/javascript` on the Calc website. JavaScript is evaluated only in an isolated browser worker. The service never evaluates submitted source. Functions calculate while an editor has the sheet open; saved results remain available to readers. A formula awaiting browser calculation shows `#BUSY!`.
+
+`GET /v1/me/functions` lists only the caller's account library as `{functions:[...]}`. `PUT /v1/me/functions/{name}` upserts `{name,parameters:["value"],code:"return value * 2;"}`. Names are canonical uppercase. The response adds `account`, the caller's UUID. `DELETE /v1/me/functions/{name}` removes that library entry; existing sheet copies remain intact. Maximum 256 functions per account, 32 parameters, 64 KB of source per definition.
+
+`GET {line}/functions` requires sheet read access and returns `{version,epoch,functions,names,calls}`. `names` lists non-built-in function names referenced in formulas. A sheet definition has `account:null`; an imported account definition identifies its originating account. Local definitions take precedence. Definitions and completed calculations are included in Calc snapshots, versions and copies.
+
+`PUT {line}/functions` requires edit access and an exact `base_version`. Its body is `{base_version,function:{name,parameters,code,account?},remove?:false}`. Only the caller's account can be named as an import source. Set `remove:true` to remove the matching name and source scope. The browser imports account functions when used and refreshes their definitions when that account opens the sheet. Source becomes readable with the sheet.
+
+Each pending `calls` entry has `{id,name,tab,row,col,args,result:null}`. Row and column are zero-based. Inputs are JSON scalars or arrays of rows. A single-cell formula argument is a scalar. `JS(code,...inputs)` uses the first string as a function body and exposes the remaining inputs as `args`. Named functions take their named parameters. Bodies may use `await`, `calc.tabs()`, `calc.cell(tab,address)`, `calc.values(tab,range)`, `calc.range(tab,range)`, and `calc.tab(tab)`. Formula reads can omit the tab to use the calling cell's tab. Code has no network, credentials, DOM or filesystem access.
+
+`POST {line}/javascript/results` commits `{base_version,epoch,results:[[call_id,{rows:[[{t:"number",v:10}]],error?:"message"}]]}`. It requires edit access, the exact current version, the current calculation epoch and unresolved call IDs. Conflicting or stale work is rejected. Rectangular outputs are limited to 200,000 cells per commit, 256 call results per commit, and 32 KB per text cell. Non-finite numbers are rejected. Results recalculate ordinary dependent formulas without executing code on the service. The browser gives formulas five seconds and commands sixty seconds.
+
+Cell styles now include `clip:boolean`, `rotation:-90..90` (or `255` for stacked text) and `control`. Controls are `{kind:"checkbox",checked?:"Yes",unchecked?:"No"}`, `{kind:"dropdown",options:["Open","Done"]}`, `{kind:"person"}`, `{kind:"file"}`, and `{kind:"rating"}`. Default checkboxes store booleans; custom values store literal text. Dropdown selections always use typed `values` edits, even when their text begins with `=`. Ratings store numbers from zero through five. Empty new checkbox/rating cells initialize to false/zero. Clearing formats preserves controls; set `control:null` to remove them. Formatting with `num_fmt:"@"` makes subsequent entered content literal text.
+
+`POST /v1/formats/preview` takes `{value:Value,code:"#,##0.00"}` and returns `{text,color}` from the same formatter used for saved cells. Formatting does not change underlying values. Cell JSON can include `tc`, a text colour chosen by a number format, and `cs`, the complete effective style after dynamic rules; `s` remains the stored base style ID.
+
+The `format_rule` edit is `{type:"format_rule",tab,range,id?,rule}`. Omit `id` to create; reuse it to update in place. `delete_format_rule` takes `{tab,id}`. Tabs expose `format_rules:[{id,range,rule}]`. Rules use stable row/column boundaries, survive copies, snapshots, history and undo, and update after edits. Maximum 100 rules per tab and the ordinary per-edit cell budget per range. Rule forms:
+
+- `{kind:"condition",condition,value,second,paint:{fill,color,bold,italic,underline,strike}}`. Conditions: `empty`, `not_empty`, `contains`, `not_contains`, `starts`, `ends`, `text_is`, `text_not`, `greater`, `greater_equal`, `less`, `less_equal`, `equal`, `not_equal`, `between`, `not_between`, `date_is`, `date_before`, `date_after`, `formula`. A custom formula is written for the top-left cell and relative references are evaluated for each cell. JavaScript cannot run as a conditional-formatting predicate.
+- `{kind:"scale",low:"#FFFFFF",high:"#18703F",middle:null}`. Numeric range minimum/maximum determine the scale; an optional middle colour sits halfway between them.
+- `{kind:"alternating",first,second,header:null,footer:null}`. Colours use `#RRGGBB`. Header/footer colours are optional. Alternation supplies the base; the first matching conditional rule takes precedence.
+
+Excel exports include native checkbox controls, supported inline dropdown validation, rotation, native conditional rules and colour scales. Additional Calc metadata retains custom control values, chips, clipping and editable formatting rules on a direct XLSX reimport into Calc. Other spreadsheet software may discard that additional metadata. JavaScript source is retained in XLSX and ODS for direct reimport; external spreadsheet engines see calculated values and cannot execute it.

@@ -21,6 +21,9 @@ export function useMenuHighlight(itemSelector = '[role="menuitem"], [role="optio
 
   function onFocus(event: FocusEvent<HTMLElement>) {
     const item = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>(itemSelector) : null;
+    // React focus events bubble through portals. A submenu owns its own rows;
+    // their offsets must never position the highlight in the parent menu.
+    if (item && !event.currentTarget.contains(item)) return;
     window.clearTimeout(clearTimer.current);
     if (!item) {
       // A short grace period keeps the highlight gliding across separators and item gaps.

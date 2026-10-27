@@ -10,9 +10,10 @@ use duckdb::arrow::{
     array::{Array, ArrayRef, AsArray},
     compute::cast,
     datatypes::{
-        DataType, Date32Type, Date64Type, Float64Type, Schema, Time32MillisecondType, Time32SecondType,
-        Time64MicrosecondType, Time64NanosecondType, TimeUnit, TimestampMicrosecondType, TimestampMillisecondType,
-        TimestampNanosecondType, TimestampSecondType,
+        DataType, Date32Type, Date64Type, Float64Type, Schema, Time32MillisecondType,
+        Time32SecondType, Time64MicrosecondType, Time64NanosecondType, TimeUnit,
+        TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType,
+        TimestampSecondType,
     },
     record_batch::RecordBatch,
     util::display::{ArrayFormatter, FormatOptions},
@@ -96,7 +97,11 @@ pub fn iso_time(serial: f64) -> String {
     let (mi, rest) = (rest / 60_000_000, rest % 60_000_000);
     let (s, us) = (rest / 1_000_000, rest % 1_000_000);
     let ms = (us + 500) / 1000;
-    if ms > 0 && ms < 1000 { format!("{h:02}:{mi:02}:{s:02}.{ms:03}") } else { format!("{h:02}:{mi:02}:{s:02}") }
+    if ms > 0 && ms < 1000 {
+        format!("{h:02}:{mi:02}:{s:02}.{ms:03}")
+    } else {
+        format!("{h:02}:{mi:02}:{s:02}")
+    }
 }
 
 /// `2026-10-17T13:45:00` for a serial.
@@ -144,7 +149,9 @@ fn split_offset(time: &str) -> Option<(&str, i64)> {
         let (clock, off) = time.split_at(i);
         let sign = if off.starts_with('-') { -1 } else { 1 };
         let off = &off[1..];
-        let (h, m) = off.split_once(':').unwrap_or((off.get(..2).unwrap_or(off), off.get(2..).unwrap_or("0")));
+        let (h, m) = off
+            .split_once(':')
+            .unwrap_or((off.get(..2).unwrap_or(off), off.get(2..).unwrap_or("0")));
         let h: i64 = h.parse().ok()?;
         let m: i64 = if m.is_empty() { 0 } else { m.parse().ok()? };
         return Some((clock, sign * (h * 60 + m)));
@@ -176,13 +183,21 @@ pub(crate) struct Collector {
 impl Collector {
     pub fn new(schema: &Schema, keep: Option<usize>, max_cells: u64) -> Self {
         let names: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
-        let kinds: Vec<Kind> = schema.fields().iter().map(|f| kind_of(f.data_type())).collect();
+        let kinds: Vec<Kind> = schema
+            .fields()
+            .iter()
+            .map(|f| kind_of(f.data_type()))
+            .collect();
         let n = names.len();
-        Self { names, kinds, has_time: vec![false; n], data: vec![Vec::new(); n], keep, count: 0, max_cells }
-    }
-
-    pub fn count(&self) -> u64 {
-        self.count
+        Self {
+            names,
+            kinds,
+            has_time: vec![false; n],
+            data: vec![Vec::new(); n],
+            keep,
+            count: 0,
+            max_cells,
+        }
     }
 
     pub fn push_batch(&mut self, batch: &RecordBatch) -> Result<(), RunError> {
@@ -237,7 +252,10 @@ impl Collector {
 
 pub(crate) fn too_many_cells(max: u64) -> RunError {
     RunError::too_large(
-        format!("The result has more than {} cells, more than one run may write.", group_digits(max)),
+        format!(
+            "The result has more than {} cells, more than one run may write.",
+            group_digits(max)
+        ),
         "Aggregate or filter it in the code, or write it in parts.",
     )
 }
@@ -276,7 +294,11 @@ fn number(n: f64) -> Value {
 }
 
 fn text(s: &str) -> Value {
-    if s.is_empty() { Value::Empty } else { Value::Text(Arc::from(s)) }
+    if s.is_empty() {
+        Value::Empty
+    } else {
+        Value::Text(Arc::from(s))
+    }
 }
 
 /// Appends the first `take` values of `array` to `out`. Returns whether any timestamp had a time of day.
@@ -288,7 +310,11 @@ fn convert_array(array: &ArrayRef, take: usize, out: &mut Vec<Value>) -> Result<
         DataType::Boolean => {
             let a = array.as_boolean();
             for i in 0..take {
-                out.push(if a.is_null(i) { Value::Empty } else { Value::Bool(a.value(i)) });
+                out.push(if a.is_null(i) {
+                    Value::Empty
+                } else {
+                    Value::Bool(a.value(i))
+                });
             }
         }
         DataType::Int8
@@ -309,35 +335,56 @@ fn convert_array(array: &ArrayRef, take: usize, out: &mut Vec<Value>) -> Result<
             let floats = if matches!(dt, DataType::Float64) {
                 array.clone()
             } else {
-                cast(array, &DataType::Float64).map_err(|e| RunError::internal(format!("reading a number column: {e}")))?
+                cast(array, &DataType::Float64)
+                    .map_err(|e| RunError::internal(format!("reading a number column: {e}")))?
             };
             let a = floats.as_primitive::<Float64Type>();
             for i in 0..take {
-                out.push(if a.is_null(i) { Value::Empty } else { number(a.value(i)) });
+                out.push(if a.is_null(i) {
+                    Value::Empty
+                } else {
+                    number(a.value(i))
+                });
             }
         }
         DataType::Utf8 => {
             let a = array.as_string::<i32>();
             for i in 0..take {
-                out.push(if a.is_null(i) { Value::Empty } else { text(a.value(i)) });
+                out.push(if a.is_null(i) {
+                    Value::Empty
+                } else {
+                    text(a.value(i))
+                });
             }
         }
         DataType::LargeUtf8 => {
             let a = array.as_string::<i64>();
             for i in 0..take {
-                out.push(if a.is_null(i) { Value::Empty } else { text(a.value(i)) });
+                out.push(if a.is_null(i) {
+                    Value::Empty
+                } else {
+                    text(a.value(i))
+                });
             }
         }
         DataType::Utf8View => {
             let a = array.as_string_view();
             for i in 0..take {
-                out.push(if a.is_null(i) { Value::Empty } else { text(a.value(i)) });
+                out.push(if a.is_null(i) {
+                    Value::Empty
+                } else {
+                    text(a.value(i))
+                });
             }
         }
         DataType::Date32 => {
             let a = array.as_primitive::<Date32Type>();
             for i in 0..take {
-                out.push(if a.is_null(i) { Value::Empty } else { Value::Number(serial_from_unix_days(a.value(i) as i64)) });
+                out.push(if a.is_null(i) {
+                    Value::Empty
+                } else {
+                    Value::Number(serial_from_unix_days(a.value(i) as i64))
+                });
             }
         }
         DataType::Date64 => {
@@ -436,7 +483,8 @@ fn convert_array(array: &ArrayRef, take: usize, out: &mut Vec<Value>) -> Result<
             }
         }
         DataType::Dictionary(_, value_type) => {
-            let plain = cast(array, value_type).map_err(|e| RunError::internal(format!("reading a column: {e}")))?;
+            let plain = cast(array, value_type)
+                .map_err(|e| RunError::internal(format!("reading a column: {e}")))?;
             has_time = convert_array(&plain, take, out)?;
         }
         _ => {
@@ -445,7 +493,11 @@ fn convert_array(array: &ArrayRef, take: usize, out: &mut Vec<Value>) -> Result<
             match ArrayFormatter::try_new(array.as_ref(), &opts) {
                 Ok(f) => {
                     for i in 0..take {
-                        out.push(if array.is_null(i) { Value::Empty } else { text(&f.value(i).to_string()) });
+                        out.push(if array.is_null(i) {
+                            Value::Empty
+                        } else {
+                            text(&f.value(i).to_string())
+                        });
                     }
                 }
                 Err(_) => out.extend(std::iter::repeat_n(Value::Error(ErrorKind::Value), take)),
@@ -462,10 +514,16 @@ pub fn answer_json(v: &Value, format: Option<&str>) -> serde_json::Value {
         Value::Empty => serde_json::Value::Null,
         Value::Number(n) => match format {
             Some(f) if f == DATE_FORMAT => serde_json::Value::String(iso_date(*n)),
-            Some(f) if f == DATETIME_FORMAT => serde_json::Value::String(iso_datetime(*n).replace('T', " ")),
+            Some(f) if f == DATETIME_FORMAT => {
+                serde_json::Value::String(iso_datetime(*n).replace('T', " "))
+            }
             Some(f) if f == TIME_FORMAT => serde_json::Value::String(iso_time(*n)),
-            Some(f) if numfmt::is_date_format(f) => serde_json::Value::String(numfmt::format_value(v, Some(f)).0),
-            _ => serde_json::Number::from_f64(*n).map(serde_json::Value::Number).unwrap_or(serde_json::Value::Null),
+            Some(f) if numfmt::is_date_format(f) => {
+                serde_json::Value::String(numfmt::format_value(v, Some(f)).0)
+            }
+            _ => serde_json::Number::from_f64(*n)
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::Null),
         },
         Value::Text(s) => serde_json::Value::String(s.to_string()),
         Value::Bool(b) => serde_json::Value::Bool(*b),
@@ -480,15 +538,26 @@ pub fn value_from_json(j: &serde_json::Value) -> (Value, bool) {
     match j {
         serde_json::Value::Null => (Value::Empty, false),
         serde_json::Value::Bool(b) => (Value::Bool(*b), false),
-        serde_json::Value::Number(n) => (n.as_f64().map(number).unwrap_or(Value::Error(ErrorKind::Num)), false),
+        serde_json::Value::Number(n) => (
+            n.as_f64()
+                .map(number)
+                .unwrap_or(Value::Error(ErrorKind::Num)),
+            false,
+        ),
         serde_json::Value::String(s) => (text(s), false),
         serde_json::Value::Object(o) => {
             if let Some(e) = o.get("$e").and_then(|e| e.as_str()) {
-                return (Value::Error(ErrorKind::parse(e).unwrap_or(ErrorKind::Value)), false);
+                return (
+                    Value::Error(ErrorKind::parse(e).unwrap_or(ErrorKind::Value)),
+                    false,
+                );
             }
             match o.get("$d") {
                 Some(serde_json::Value::Number(ms)) => match ms.as_f64() {
-                    Some(ms) if ms.is_finite() => (Value::Number(serial_from_unix_micros((ms * 1000.0).round() as i64)), true),
+                    Some(ms) if ms.is_finite() => (
+                        Value::Number(serial_from_unix_micros((ms * 1000.0).round() as i64)),
+                        true,
+                    ),
                     _ => (Value::Error(ErrorKind::Num), false),
                 },
                 Some(serde_json::Value::String(s)) => match serial_from_iso(s) {
@@ -521,7 +590,12 @@ pub fn cell_json(v: &Value, num_fmt: Option<&str>) -> (serde_json::Value, &'stat
                 }
                 return (serde_json::Value::String(iso_datetime(*n)), "datetime");
             }
-            (serde_json::Number::from_f64(*n).map(serde_json::Value::Number).unwrap_or(serde_json::Value::Null), "number")
+            (
+                serde_json::Number::from_f64(*n)
+                    .map(serde_json::Value::Number)
+                    .unwrap_or(serde_json::Value::Null),
+                "number",
+            )
         }
         Value::Text(s) => (serde_json::Value::String(s.to_string()), "text"),
         Value::Bool(b) => (serde_json::Value::Bool(*b), "bool"),
@@ -547,7 +621,10 @@ pub fn date_parts(code: &str) -> (bool, bool) {
             '[' if !in_quote => {
                 in_bracket = true;
                 // [h], [mm], [ss]: elapsed time.
-                if chars.get(i + 1).is_some_and(|n| matches!(n.to_ascii_lowercase(), 'h' | 'm' | 's')) {
+                if chars
+                    .get(i + 1)
+                    .is_some_and(|n| matches!(n.to_ascii_lowercase(), 'h' | 'm' | 's'))
+                {
                     time = true;
                 }
             }
@@ -557,7 +634,10 @@ pub fn date_parts(code: &str) -> (bool, bool) {
             'h' | 'H' | 's' | 'S' => time = true,
             'm' | 'M' => {
                 // Minutes right after hours or right before seconds; months otherwise.
-                let next_s = chars[i + 1..].iter().find(|c| c.is_ascii_alphabetic()).is_some_and(|c| c.eq_ignore_ascii_case(&'s'));
+                let next_s = chars[i + 1..]
+                    .iter()
+                    .find(|c| c.is_ascii_alphabetic() && !c.eq_ignore_ascii_case(&'m'))
+                    .is_some_and(|c| c.eq_ignore_ascii_case(&'s'));
                 if prev.eq_ignore_ascii_case(&'h') || next_s {
                     time = true;
                 } else {
@@ -566,7 +646,7 @@ pub fn date_parts(code: &str) -> (bool, bool) {
             }
             _ => {}
         }
-        if c.is_ascii_alphabetic() {
+        if c.is_ascii_alphabetic() && !c.eq_ignore_ascii_case(&'m') {
             prev = c;
         }
     }
@@ -582,16 +662,28 @@ mod tests {
         assert_eq!(serial_from_unix_days(0), 25_569.0);
         assert_eq!(unix_days_from_serial(25_569.0), 0);
         // 1900-03-01 is serial 61; 1900-02-28 is 59.
-        assert_eq!(serial_from_unix_days(unix_days_from_civil(1900, 3, 1)), 61.0);
-        assert_eq!(serial_from_unix_days(unix_days_from_civil(1900, 2, 28)), 59.0);
-        assert_eq!(unix_days_from_serial(59.0), unix_days_from_civil(1900, 2, 28));
+        assert_eq!(
+            serial_from_unix_days(unix_days_from_civil(1900, 3, 1)),
+            61.0
+        );
+        assert_eq!(
+            serial_from_unix_days(unix_days_from_civil(1900, 2, 28)),
+            59.0
+        );
+        assert_eq!(
+            unix_days_from_serial(59.0),
+            unix_days_from_civil(1900, 2, 28)
+        );
         assert_eq!(iso_date(46_312.0), "2026-10-17");
         assert_eq!(iso_datetime(46_312.5), "2026-10-17T12:00:00");
         assert_eq!(iso_time(0.75), "18:00:00");
         assert_eq!(serial_from_iso("2026-10-17"), Some(46_312.0));
         assert_eq!(serial_from_iso("2026-10-17T12:00:00Z"), Some(46_312.5));
         assert_eq!(serial_from_iso("2026-10-17 14:00:00+02:00"), Some(46_312.5));
-        assert_eq!(unix_micros_from_serial(serial_from_unix_micros(1_760_000_000_123_456)), 1_760_000_000_123_456);
+        assert_eq!(
+            unix_micros_from_serial(serial_from_unix_micros(1_760_000_000_123_456)),
+            1_760_000_000_123_456
+        );
     }
 
     #[test]

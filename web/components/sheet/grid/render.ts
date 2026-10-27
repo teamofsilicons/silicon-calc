@@ -14,31 +14,31 @@ import { colLeft, frozenHeight, frozenWidth, type GridLayout, rowTop, type Span,
 
 export const COLORS = {
   background: "#FFFFFF",
-  gridline: "#E4E7EC",
-  header: "#F7F8FA",
-  headerLine: "#DDE1E7",
-  headerText: "#5C6370",
-  headerActive: "#E4ECF7",
-  headerActiveText: "#174C96",
-  headerSelected: "#1F5FB8",
-  selectionFill: "rgba(31, 95, 184, 0.09)",
-  selection: "#1F5FB8",
-  frozenLine: "#C4CAD3",
-  text: "#292929",
-  pendingText: "#5C6370",
-  error: "#B42318",
-  comment: "#E39B2D",
-  spill: "#1F5FB8",
-  loading: "#EEF0F4",
-  protectedHatch: "rgba(147, 86, 10, 0.16)",
-  diffChanged: "rgba(31, 95, 184, 0.16)",
-  diffAdded: "rgba(24, 112, 63, 0.16)",
-  diffRemoved: "rgba(180, 35, 24, 0.14)",
-  conflict: "rgba(147, 86, 10, 0.22)",
-  copy: "#1F5FB8",
+  gridline: "#E9E9E9",
+  header: "#F8F8F8",
+  headerLine: "#C4C4C4",
+  headerText: "#585858",
+  headerActive: "#EBEBEB",
+  headerActiveText: "#1F1F1F",
+  headerSelected: "#353535",
+  selectionFill: "rgba(53, 53, 53, 0.09)",
+  selection: "#353535",
+  frozenLine: "#C4C4C4",
+  text: "#0B0B0B",
+  pendingText: "#585858",
+  error: "#CD1526",
+  comment: "#A86C00",
+  spill: "#353535",
+  loading: "#F8F8F8",
+  protectedHatch: "rgba(168, 108, 0, 0.16)",
+  diffChanged: "rgba(53, 53, 53, 0.16)",
+  diffAdded: "rgba(0, 117, 48, 0.16)",
+  diffRemoved: "rgba(205, 21, 38, 0.14)",
+  conflict: "rgba(168, 108, 0, 0.22)",
+  copy: "#353535",
 } as const;
 
-export const FONT_FAMILY = '-apple-system, BlinkMacSystemFont, "SF Pro Text", "BDO Grotesk", system-ui, sans-serif';
+export const FONT_FAMILY = '"Paper Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace';
 /** The text size of a cell without its own (10 pt, as in Google Sheets). */
 export const DEFAULT_FONT_PX = 13;
 const PAD = 4;
@@ -242,7 +242,7 @@ function drawPane(ctx: CanvasRenderingContext2D, scene: Scene, pane: Pane): void
       const w = layout.cols.sizeOf(col);
       if (!w) continue;
       const cell = data.get(row, col);
-      const style = cell?.s ? styles.get(cell.s) : undefined;
+      const style = cell?.cs ?? (cell?.s ? styles.get(cell.s) : undefined);
       if (style?.fill && !covered(row, col)) {
         ctx.fillStyle = style.fill;
         ctx.fillRect(colLeft(layout, scene.view, col), y, w, h);
@@ -272,7 +272,7 @@ function drawPane(ctx: CanvasRenderingContext2D, scene: Scene, pane: Pane): void
   for (const m of merges) {
     const box = mergeBox(scene, m);
     const top = data.get(m.r1, m.c1);
-    const style = top?.s ? styles.get(top.s) : undefined;
+    const style = top?.cs ?? (top?.s ? styles.get(top.s) : undefined);
     ctx.fillStyle = style?.fill ?? COLORS.background;
     ctx.fillRect(box.x, box.y, box.w - 1, box.h - 1);
   }
@@ -333,11 +333,13 @@ function blank(scene: Scene, row: number, col: number): boolean {
   const cell = scene.data.get(row, col);
   if (scene.data.pendingAt(row, col)) return false;
   if (!cell) return !scene.data.mergeAt(row, col);
+  if (cell.s && scene.styles.get(cell.s)?.control) return false;
   return (cell.v.t === "empty" || (cell.v.t === "text" && cell.v.v === "")) && !cell.f && !scene.data.mergeAt(row, col);
 }
 
 function drawCellText(ctx: CanvasRenderingContext2D, scene: Scene, cell: CellRecord | undefined, pending: string | undefined, row: number, col: number, box: { x: number; y: number; w: number; h: number }, pane: Pane, merged: boolean): void {
-  const style = cell?.s ? scene.styles.get(cell.s) : undefined;
+  const style = cell?.cs ?? (cell?.s ? scene.styles.get(cell.s) : undefined);
+  if (style?.control) return; // Accessible HTML controls sit over these cells.
   const text = pending !== undefined ? pending : shownText(cell);
   if (!text) return;
   const kind = kindOf(cell, pending);
@@ -348,11 +350,30 @@ function drawCellText(ctx: CanvasRenderingContext2D, scene: Scene, cell: CellRec
   if (h === "left" || h === "center" || h === "right") align = h;
   else if (kind === "number") align = "right";
   else if (kind === "bool" || kind === "error") align = "center";
-  const color = pending !== undefined && pending.startsWith("=") ? COLORS.pendingText : kind === "error" ? COLORS.error : style?.color ?? COLORS.text;
+  const color = pending !== undefined && pending.startsWith("=") ? COLORS.pendingText : kind === "error" ? COLORS.error : cell?.tc ?? style?.color ?? COLORS.text;
   const inner = box.w - 2 * PAD;
   const lineHeight = Math.round(px * 1.3);
   const valign = style?.v_align ?? "bottom";
 
+  if (style?.rotation) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(box.x, box.y, box.w - 1, box.h - 1);
+    ctx.clip();
+    if (style.rotation === 255) {
+      const characters = [...text];
+      const total = characters.length * lineHeight;
+      const start = valign === "top" ? box.y + 3 : valign === "middle" ? box.y + (box.h - total) / 2 : box.y + box.h - total - 3;
+      characters.forEach((character, i) => drawLine(ctx, character, align, box.x, box.w, start + (i + .5) * lineHeight, style, color, font, px));
+    } else {
+      ctx.translate(box.x + box.w / 2, box.y + box.h / 2);
+      ctx.rotate(-style.rotation * Math.PI / 180);
+      const width = Math.max(box.w, box.h);
+      drawLine(ctx, text, "center", -width / 2, width, 0, style, color, font, px);
+    }
+    ctx.restore();
+    return;
+  }
   if (style?.wrap) {
     const lines = wrapLines(ctx, font, text, Math.max(4, inner));
     ctx.save();
@@ -385,7 +406,7 @@ function drawCellText(ctx: CanvasRenderingContext2D, scene: Scene, cell: CellRec
   }
   let left = box.x;
   let right = box.x + box.w;
-  if (textWidth > inner && !merged && kind === "text") {
+  if (textWidth > inner && !merged && kind === "text" && !style?.clip) {
     const { layout } = scene;
     // Overflow into empty neighbours, the way the text is aligned.
     if (align === "left" || align === "center") {
@@ -413,7 +434,7 @@ function drawCellText(ctx: CanvasRenderingContext2D, scene: Scene, cell: CellRec
         const x = colLeft(scene.layout, scene.view, c);
         if (x >= right) break;
         const neighbour = scene.data.get(row, c);
-        const fill = neighbour?.s ? scene.styles.get(neighbour.s)?.fill : undefined;
+        const fill = neighbour?.cs?.fill ?? (neighbour?.s ? scene.styles.get(neighbour.s)?.fill : undefined);
         if (fill) {
           ctx.fillStyle = fill;
           ctx.fillRect(x, box.y, Math.min(scene.layout.cols.sizeOf(c), right - x) - 1, box.h - 1);
@@ -489,8 +510,8 @@ function drawBorders(ctx: CanvasRenderingContext2D, scene: Scene, pane: Pane, me
     for (let col = pane.cols.start; col <= pane.cols.end; col++) {
       if (!layout.cols.sizeOf(col)) continue;
       const cell = data.get(row, col);
-      if (!cell?.s) continue;
-      const style = styles.get(cell.s);
+      if (!cell) continue;
+      const style = cell.cs ?? (cell.s ? styles.get(cell.s) : undefined);
       if (!style || !(style.border_top || style.border_bottom || style.border_left || style.border_right)) continue;
       const box = boxOf(row, col);
       for (const side of sides) {
@@ -676,13 +697,9 @@ function drawOverlays(ctx: CanvasRenderingContext2D, scene: Scene): void {
     const activeRect = merge ?? { r1: selection.active.row, c1: selection.active.col, r2: selection.active.row, c2: selection.active.col };
     const isMergeOnly = merge !== null && merge.r1 === selection.range.r1 && merge.c1 === selection.range.c1 && merge.r2 === selection.range.r2 && merge.c2 === selection.range.c2;
     if (box && !single && !isMergeOnly) {
-      // A light tint over the selection, leaving the active cell clear (it is the one being typed into).
-      const activeBox = screenRect(scene, activeRect);
+      // Tint the whole range; the active cell is distinguished by its outline.
       ctx.fillStyle = COLORS.selectionFill;
-      ctx.beginPath();
-      ctx.rect(box.x, box.y, box.w - 1, box.h - 1);
-      if (activeBox) ctx.rect(activeBox.x, activeBox.y, activeBox.w - 1, activeBox.h - 1);
-      ctx.fill("evenodd");
+      ctx.fillRect(box.x, box.y, box.w - 1, box.h - 1);
       strokeRect(ctx, box, COLORS.selection, 1);
     }
     const activeBox = screenRect(scene, activeRect);
@@ -693,7 +710,7 @@ function drawOverlays(ctx: CanvasRenderingContext2D, scene: Scene): void {
     }
     if (scene.fillPreview) {
       const p = screenRect(scene, scene.fillPreview);
-      if (p) strokeRect(ctx, p, "#5C6370", 1, [4, 3]);
+      if (p) strokeRect(ctx, p, "#585858", 1, [4, 3]);
     }
     // The fill handle: a small square at the selection's bottom right corner.
     if (box && scene.fillHandle && !scene.editing) {
@@ -818,7 +835,7 @@ function drawHeaders(ctx: CanvasRenderingContext2D, scene: Scene): void {
   ctx.fillStyle = COLORS.headerLine;
   ctx.fillRect(hw - 1, 0, 1, hh);
   ctx.fillRect(0, hh - 1, hw, 1);
-  ctx.fillStyle = all ? "#FFFFFF" : "#B9BFC9";
+  ctx.fillStyle = all ? "#FFFFFF" : "#CACACA";
   ctx.beginPath();
   ctx.moveTo(hw - 5, hh - 14);
   ctx.lineTo(hw - 5, hh - 5);

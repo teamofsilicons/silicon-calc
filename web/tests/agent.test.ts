@@ -32,8 +32,8 @@ test("llms.txt says what the app is, how a Silicon installs it and signs in, and
 
 test("the mark is the configured glyph, white on a squircle of the app's colour", () => {
   const svg = markSvg();
-  assert.match(svg, /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" viewBox="0 0 64 64"><path fill="#1F5FB8" d="M32 0c19\.6/);
+  assert.match(svg, /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" viewBox="0 0 64 64"><path fill="#0B0B0B" d="M32 0c19\.6/);
   assert.ok(svg.includes('stroke="#FFFFFF"'));
   assert.ok(svg.includes('<path d="M3 9h18"/>'));
-  assert.match(markSvg({ shape: "square" }), /<rect width="64" height="64" fill="#1F5FB8"\/>/);
+  assert.match(markSvg({ shape: "square" }), /<rect width="64" height="64" fill="#0B0B0B"\/>/);
 });

@@ -192,7 +192,7 @@ Everything a Carbon or Silicon reads: pages, buttons, errors, toasts, `llms.txt`
 
 [DESIGN.md](DESIGN.md) is the full system. In short:
 
-- **Type**: BDO Grotesk 600 for page titles (`clamp(2.25rem, 4.8vw, 3.25rem)`, −0.025em), section titles at 1.125rem 500
+- **Type**: Paper Mono 600 for page titles (`clamp(2.25rem, 4.8vw, 3.25rem)`, −0.025em), section titles at 1.125rem 500
   in the text face, body 1rem/1.4, secondary text 0.875rem, labels 0.75rem. Tabular figures for numbers that line up.
 - **Spacing**: the 4 px scale (`--space-1` … `--space-24`); 32 to 48 px between sections, 16 to 24 px inside surfaces,
   `--gutter` at the page edge. One `Page` per page.

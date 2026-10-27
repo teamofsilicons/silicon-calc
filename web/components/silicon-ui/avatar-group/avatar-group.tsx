@@ -4,6 +4,7 @@ import { useState, type CSSProperties } from "react";
 import { AnimatePresence, motion, useReducedMotion, type Variants } from "motion/react";
 import { motionTokens } from "../lib/motion-tokens";
 import { Avatar } from "../avatar/avatar";
+import { Tooltip } from "../tooltip/tooltip";
 import styles from "./avatar-group.module.css";
 
 export interface AvatarGroupMember { name: string; src?: string; status?: "online" | "offline"; }
@@ -25,7 +26,7 @@ export function AvatarGroup({ members, max = 4, size = "md", label = "Team membe
   if (count.overflow !== overflow) setCount({ overflow, direction: overflow < count.overflow ? -1 : 1 });
   return <div className={[styles.group, styles[size]].join(" ")} role="group" aria-label={label} style={{ "--count": visible.length + (overflow > 0 ? 1 : 0) } as CSSProperties}>
     <AnimatePresence initial={false}>
-      {visible.map((member, index) => <motion.span key={member.name} className={styles.slot} style={{ "--index": index } as CSSProperties} {...slot} transition={transition}><span className={styles.lift}><Avatar className={styles.avatar} name={member.name} src={member.src} status={member.status} size={size} /><span className={styles.tip} aria-hidden="true">{member.name}</span></span></motion.span>)}
+      {visible.map((member, index) => <motion.span key={member.name} className={styles.slot} style={{ "--index": index } as CSSProperties} {...slot} transition={transition}><Tooltip content={member.name} side="bottom"><span className={styles.lift} tabIndex={0}><Avatar className={styles.avatar} name={member.name} src={member.src} status={member.status} size={size} /></span></Tooltip></motion.span>)}
       {overflow > 0 ? <motion.span key="overflow" className={styles.slot} style={{ "--index": visible.length } as CSSProperties} {...slot} transition={transition}><span className={[styles.lift, styles.overflow, styles[size]].join(" ")} role="img" aria-label={`${overflow} more ${label.toLowerCase()}`}><AnimatePresence mode="popLayout" initial={false} custom={count.direction}><motion.span key={overflow} className={styles.count} custom={count.direction} variants={reduceMotion ? fade : rise} initial="hidden" animate="shown" exit="gone" aria-hidden="true">+{overflow}</motion.span></AnimatePresence></span></motion.span> : null}
     </AnimatePresence>
   </div>;

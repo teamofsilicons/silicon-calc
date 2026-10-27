@@ -91,7 +91,7 @@ impl Role {
 
 /// The columns `SheetRow` reads, for `select {SHEET_COLUMNS} from sheets …`.
 pub const SHEET_COLUMNS: &str = "id, title, folder_id, owner, created_by, created_at, updated_at, updated_by, trashed_at, \
-                                 public_enabled, public_access";
+                                 public_enabled, public_access, require_email, email_gate_version";
 
 /// The columns `FolderRow` reads.
 pub const FOLDER_COLUMNS: &str = "id, name, parent_id, owner, created_by, created_at, trashed_at";
@@ -109,6 +109,8 @@ pub struct SheetRow {
     pub trashed_at: Option<OffsetDateTime>,
     pub public_enabled: bool,
     pub public_access: String,
+    pub require_email: bool,
+    pub email_gate_version: i64,
 }
 
 #[derive(Clone, Debug, FromRow)]

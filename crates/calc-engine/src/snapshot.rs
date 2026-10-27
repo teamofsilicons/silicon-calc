@@ -21,6 +21,10 @@ struct Stored {
     charts: Vec<Chart>,
     protections: Vec<Protection>,
     settings: Settings,
+    #[serde(default)]
+    functions: Vec<crate::javascript::Function>,
+    #[serde(default)]
+    javascript: crate::javascript::State,
     /// Formula groups by id (`None` for a free slot): the tab and the tree.
     groups: Vec<Option<(TabId, Expr)>>,
     spills: Vec<((TabId, RowId, ColId), SpillInfo)>,
@@ -45,6 +49,8 @@ pub fn encode(wb: &Workbook) -> Vec<u8> {
         charts: wb.charts.clone(),
         protections: wb.protections.clone(),
         settings: wb.settings.clone(),
+        functions: wb.functions.clone(),
+        javascript: wb.javascript.lock().unwrap().clone(),
         groups: wb.groups.list.iter().map(|g| g.as_ref().map(|g| (g.tab, (*g.expr).clone()))).collect(),
         spills: wb.spills.iter().map(|(k, v)| (*k, *v)).collect(),
     };
@@ -70,6 +76,8 @@ pub fn decode(bytes: &[u8]) -> Result<Workbook, SnapshotError> {
     wb.charts = stored.charts;
     wb.protections = stored.protections;
     wb.settings = stored.settings;
+    wb.functions = stored.functions;
+    wb.javascript = std::sync::Mutex::new(stored.javascript);
     for mut t in stored.tabs {
         t.rebuild_indexes();
         wb.tabs.push(t);

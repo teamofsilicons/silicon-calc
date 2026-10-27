@@ -1,36 +1,23 @@
-//! Running code against a sheet, and the file conversions the engine leaves to the service.
+//! Trusted file conversion helpers. User commands run only in the browser.
 //!
-//! - **SQL** runs in DuckDB inside the service's own process: one in-memory database per run, holding only the
-//!   tables the query names, loaded from the sheet the moment DuckDB first asks for them. That database can't
-//!   read or write files, load extensions or change its settings, and the runner only lets queries read.
-//! - **Python** and **JavaScript** run in a child process inside a sandbox (macOS `sandbox-exec`, Linux `bwrap`):
-//!   no network, no files outside the run's own scratch folder, no other programs, a time limit and a memory
-//!   limit. The child asks for tabs over a pipe while it runs (`calc.tab("Sales")`) and the runner answers with
-//!   Parquet (Python) or JSON (JavaScript) it writes into the scratch folder for that tab.
-//! - **Conversions**: Parquet in and out (DuckDB), Apple Numbers in and out (numbers-parser, in the sandboxed
-//!   Python), and writing `.xls` (xlwt, likewise).
-//!
-//! Every tab or range is read as a table the same way everywhere ([`table`]): its first row names the columns
-//! and each column gets the type its cells share.
-//!
-//! Everything here blocks; the service calls it on a blocking thread.
+//! Parquet uses an isolated DuckDB database per conversion. LibreOffice and the
+//! fixed Python converter run with OS sandbox and resource limits. Native Numbers
+//! automation is a separate, explicit desktop-only opt-in; it is not OS confined.
+//! These blocking helpers are called on a service blocking thread.
 
-mod child;
 mod convert;
 mod duck;
 mod error;
-mod helpers;
 mod sandbox;
 mod script;
 mod source;
-mod sql;
 pub mod table;
 pub mod values;
 
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use calc_engine::{
@@ -45,54 +32,14 @@ pub use error::{RunError, RunErrorKind};
 pub use source::{CellRead, SheetSource};
 pub use table::{ColumnType, Table};
 
-/// The languages code can be written in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Language {
-    Sql,
-    Python,
-    JavaScript,
-}
-
-impl Language {
-    pub const ALL: [Language; 3] = [Self::Sql, Self::Python, Self::JavaScript];
-
-    /// `sql`, `python` or `javascript` (also `py`, `js`), any case.
-    pub fn parse(s: &str) -> Option<Self> {
-        Some(match s.trim().to_ascii_lowercase().as_str() {
-            "sql" => Self::Sql,
-            "python" | "py" => Self::Python,
-            "javascript" | "js" => Self::JavaScript,
-            _ => return None,
-        })
-    }
-
-    /// The name stored with a code-made tab and used in the API.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Sql => "sql",
-            Self::Python => "python",
-            Self::JavaScript => "javascript",
-        }
-    }
-
-    /// The name people know it by.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Sql => "SQL",
-            Self::Python => "Python",
-            Self::JavaScript => "JavaScript",
-        }
-    }
-}
-
-/// How Python and JavaScript are kept apart from everything else.
+/// How trusted converter subprocesses are isolated.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SandboxMode {
     /// `sandbox-exec` on macOS, `bwrap` on Linux, whichever is there.
     Auto,
     MacOs,
     Bwrap,
-    /// No sandbox: code can reach the network and the disk. For local development only.
+    /// No sandbox for converters. For local development only.
     Off,
 }
 
@@ -114,7 +61,7 @@ impl SandboxMode {
 pub struct Limits {
     /// Wall-clock time, after which the run is stopped.
     pub timeout: Duration,
-    /// Memory: DuckDB's limit for SQL, the child's resident memory for Python and JavaScript.
+    /// Memory: DuckDB memory and converter process resident memory.
     pub memory_bytes: u64,
     /// How much of standard output and of standard error is kept, each.
     pub output_bytes: usize,
@@ -122,7 +69,7 @@ pub struct Limits {
     pub result_cells: u64,
     /// Threads DuckDB (and numpy, pyarrow) may use.
     pub threads: usize,
-    /// The most bytes Python or JavaScript may keep in their scratch folder.
+    /// The most bytes a converter may keep in its scratch folder.
     pub scratch_bytes: u64,
 }
 
@@ -145,8 +92,6 @@ pub struct RunnerConfig {
     /// The Python with pandas, numpy, pyarrow, duckdb, numbers-parser and xlwt (`scripts/setup-runner.sh` makes
     /// one at `.dev/runner-venv`).
     pub python: PathBuf,
-    /// Node.js.
-    pub node: PathBuf,
     pub sandbox: SandboxMode,
     /// Where each run gets its scratch folder (default: the system's temporary folder).
     pub scratch_root: PathBuf,
@@ -156,26 +101,14 @@ pub struct RunnerConfig {
 impl RunnerConfig {
     /// A configuration with the given interpreters, the default limits and scratch folders in the system's
     /// temporary folder.
-    pub fn new(python: impl Into<PathBuf>, node: impl Into<PathBuf>, sandbox: SandboxMode) -> Self {
+    pub fn new(python: impl Into<PathBuf>, sandbox: SandboxMode) -> Self {
         Self {
             python: python.into(),
-            node: node.into(),
             sandbox,
             scratch_root: std::env::temp_dir().join("silicon-calc-runs"),
             limits: Limits::default(),
         }
     }
-}
-
-/// A run to do.
-pub struct RunRequest<'a> {
-    pub language: Language,
-    pub code: &'a str,
-    /// The sheet's tabs, by name.
-    pub sheet: &'a dyn SheetSource,
-    /// Keep only the first `n` rows of the result (an answer shows at most 1,000); `None` keeps every row (the
-    /// result is written into a tab), up to [`Limits::result_cells`].
-    pub keep_rows: Option<usize>,
 }
 
 /// One column of a result.
@@ -187,18 +120,18 @@ pub struct OutColumn {
     pub values: Vec<Value>,
 }
 
-/// What a run gave.
+/// Materialized tabular data used by converters and browser result commits.
 #[derive(Clone, Debug, Default)]
 pub struct RunOutput {
     pub columns: Vec<OutColumn>,
     /// How many rows the result has in all (the columns hold fewer when they were cut to `keep_rows`).
     pub row_count: u64,
-    /// Whether the code gave a result at all (Python and JavaScript code may only print).
+    /// Whether a tabular result is present.
     pub has_result: bool,
     pub stdout: String,
     pub stderr: String,
     pub duration: Duration,
-    /// The tabs the code read, in the order it first read them.
+    /// Input tab metadata, when supplied by a caller.
     pub inputs: Vec<TabId>,
 }
 
@@ -215,12 +148,23 @@ impl RunOutput {
 
     /// Row `i` of the result.
     pub fn row(&self, i: usize) -> impl Iterator<Item = &Value> {
-        self.columns.iter().map(move |c| c.values.get(i).unwrap_or(&Value::Empty))
+        self.columns
+            .iter()
+            .map(move |c| c.values.get(i).unwrap_or(&Value::Empty))
     }
 
     /// The column names as the header row cells get them.
     fn header(&self) -> Vec<Value> {
-        self.columns.iter().map(|c| if c.name.is_empty() { Value::Empty } else { Value::text(c.name.as_str()) }).collect()
+        self.columns
+            .iter()
+            .map(|c| {
+                if c.name.is_empty() {
+                    Value::Empty
+                } else {
+                    Value::text(c.name.as_str())
+                }
+            })
+            .collect()
     }
 
     /// The result as a new tab's contents: the column names in the first row, the rows below, date and time
@@ -228,19 +172,29 @@ impl RunOutput {
     pub fn tab_content(&self, code: Option<CodeSource>) -> TabContent {
         let mut styles: Vec<Style> = Vec::new();
         let mut columns = Vec::with_capacity(self.columns.len());
+        let header = self.header();
         for (i, col) in self.columns.iter().enumerate() {
             let mut values = Vec::with_capacity(col.values.len() + 1);
-            values.push(self.header()[i].clone());
+            values.push(header[i].clone());
             values.extend(col.values.iter().cloned());
             while values.last().is_some_and(Value::is_empty) {
                 values.pop();
             }
-            let mut cc = ColumnContent { values, ..Default::default() };
+            let mut cc = ColumnContent {
+                values,
+                ..Default::default()
+            };
             if let Some(fmt) = &col.format {
-                let ix = match styles.iter().position(|s| s.num_fmt.as_deref() == Some(fmt)) {
+                let ix = match styles
+                    .iter()
+                    .position(|s| s.num_fmt.as_deref() == Some(fmt))
+                {
                     Some(ix) => ix,
                     None => {
-                        styles.push(Style { num_fmt: Some(fmt.clone()), ..Default::default() });
+                        styles.push(Style {
+                            num_fmt: Some(fmt.clone()),
+                            ..Default::default()
+                        });
                         styles.len() - 1
                     }
                 } as u32;
@@ -254,7 +208,11 @@ impl RunOutput {
             }
             columns.push(cc);
         }
-        let rows = if self.columns.is_empty() { 0 } else { self.kept_rows() as u32 + 1 };
+        let rows = if self.columns.is_empty() {
+            0
+        } else {
+            self.kept_rows() as u32 + 1
+        };
         TabContent {
             rows,
             cols: self.columns.len() as u32,
@@ -272,10 +230,21 @@ impl RunOutput {
     pub fn cell_writes(&self, row: u32, col: u32) -> Vec<(u32, u32, CellWrite)> {
         let mut out = Vec::with_capacity((self.kept_rows() + 1) * self.columns.len());
         for (c, v) in self.header().into_iter().enumerate() {
-            out.push((row, col + c as u32, CellWrite { clear: true, value: Some(v), ..Default::default() }));
+            out.push((
+                row,
+                col + c as u32,
+                CellWrite {
+                    clear: true,
+                    value: Some(v),
+                    ..Default::default()
+                },
+            ));
         }
         for (c, column) in self.columns.iter().enumerate() {
-            let patch = column.format.as_ref().map(|f| StylePatch { num_fmt: Some(Some(f.clone())), ..Default::default() });
+            let patch = column.format.as_ref().map(|f| StylePatch {
+                num_fmt: Some(Some(f.clone())),
+                ..Default::default()
+            });
             for (r, v) in column.values.iter().enumerate() {
                 out.push((
                     row + 1 + r as u32,
@@ -293,7 +262,7 @@ impl RunOutput {
     }
 }
 
-/// Runs code and converts files. One per service; it is cheap to share.
+/// Converts files using fixed, trusted conversion routines.
 pub struct Runner {
     cfg: RunnerConfig,
     probes: Mutex<Probes>,
@@ -302,59 +271,46 @@ pub struct Runner {
 #[derive(Default)]
 struct Probes {
     python: Option<Result<Arc<script::Probe>, RunError>>,
-    node: Option<Result<Arc<script::Probe>, RunError>>,
     sandbox: Option<Result<sandbox::Kind, RunError>>,
 }
 
 impl Runner {
     pub fn new(cfg: RunnerConfig) -> Self {
-        Self { cfg, probes: Mutex::new(Probes::default()) }
+        Self {
+            cfg,
+            probes: Mutex::new(Probes::default()),
+        }
     }
 
     pub fn config(&self) -> &RunnerConfig {
         &self.cfg
     }
 
-    /// Runs code against a sheet.
-    pub fn run(&self, req: &RunRequest<'_>) -> Result<RunOutput, RunError> {
-        let started = Instant::now();
-        let mut out = match req.language {
-            Language::Sql => sql::run(self, req)?,
-            Language::Python | Language::JavaScript => script::run(self, req)?,
-        };
-        out.duration = started.elapsed();
-        Ok(out)
-    }
-
-    /// The sandbox Python and JavaScript run in here, found once.
+    /// The sandbox trusted converters run in, found once.
     pub(crate) fn sandbox(&self) -> Result<sandbox::Kind, RunError> {
         let mut p = self.probes.lock().expect("probes lock");
-        p.sandbox.get_or_insert_with(|| sandbox::Kind::find(self.cfg.sandbox)).clone()
+        p.sandbox
+            .get_or_insert_with(|| sandbox::Kind::find(self.cfg.sandbox))
+            .clone()
     }
 
-    /// Which sandbox code runs in: `macos`, `bwrap` or `off`, or why there is none.
+    /// Which sandbox converters run in: `macos`, `bwrap` or `off`, or why there is none.
     pub fn sandbox_name(&self) -> Result<&'static str, RunError> {
         self.sandbox().map(|k| k.name())
     }
 
-    /// What the interpreter for `language` is and may read, found once.
-    pub(crate) fn probe(&self, language: Language) -> Result<Arc<script::Probe>, RunError> {
-        let slot = {
-            let p = self.probes.lock().expect("probes lock");
-            match language {
-                Language::JavaScript => p.node.clone(),
-                _ => p.python.clone(),
-            }
-        };
-        if let Some(r) = slot {
-            return r;
+    /// Find the configured Python interpreter and its import paths once.
+    pub(crate) fn probe(&self) -> Result<Arc<script::Probe>, RunError> {
+        if let Some(found) = self.probes.lock().expect("probes lock").python.clone() {
+            return found;
         }
-        let found = script::Probe::find(self, language).map(Arc::new);
-        let mut p = self.probes.lock().expect("probes lock");
-        match language {
-            Language::JavaScript => p.node.get_or_insert(found).clone(),
-            _ => p.python.get_or_insert(found).clone(),
-        }
+        let found = script::Probe::find(self).map(Arc::new);
+        self.probes
+            .lock()
+            .expect("probes lock")
+            .python
+            .get_or_insert(found)
+            .clone()
     }
 
     /// A new scratch folder for one run or conversion, removed when the returned guard is dropped.
@@ -371,12 +327,20 @@ pub(crate) struct Scratch {
 impl Scratch {
     fn new(root: &Path) -> Result<Self, RunError> {
         use rand::Rng as _;
-        std::fs::create_dir_all(root).map_err(|e| RunError::internal(format!("making the scratch folder {}: {e}", root.display())))?;
-        let root = root.canonicalize().map_err(|e| RunError::internal(format!("finding the scratch folder: {e}")))?;
+        std::fs::create_dir_all(root).map_err(|e| {
+            RunError::internal(format!("making the scratch folder {}: {e}", root.display()))
+        })?;
+        let root = root
+            .canonicalize()
+            .map_err(|e| RunError::internal(format!("finding the scratch folder: {e}")))?;
         for _ in 0..16 {
             let name: String = {
                 let mut rng = rand::rng();
-                (0..16).map(|_| char::from(b"abcdefghijklmnopqrstuvwxyz0123456789"[rng.random_range(0..36)])).collect()
+                (0..16)
+                    .map(|_| {
+                        char::from(b"abcdefghijklmnopqrstuvwxyz0123456789"[rng.random_range(0..36)])
+                    })
+                    .collect()
             };
             let path = root.join(format!("run-{name}"));
             match std::fs::create_dir(&path) {
@@ -384,7 +348,8 @@ impl Scratch {
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt as _;
-                        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700));
+                        let _ =
+                            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700));
                     }
                     std::fs::create_dir_all(path.join("tmp")).map_err(RunError::internal)?;
                     return Ok(Self { path });
@@ -393,7 +358,9 @@ impl Scratch {
                 Err(e) => return Err(RunError::internal(format!("making a scratch folder: {e}"))),
             }
         }
-        Err(RunError::internal("sixteen scratch folder names in a row were taken"))
+        Err(RunError::internal(
+            "sixteen scratch folder names in a row were taken",
+        ))
     }
 }
 

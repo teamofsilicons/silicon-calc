@@ -20,6 +20,8 @@ import { freshSession } from "@/lib/server/fresh";
 import { json, misconfigured } from "@/lib/server/responses";
 import { clearSession, clientHeaders, errorBody, readSession, sameOriginProblem, writeSession } from "@/lib/server/session";
 
+import { viewGrantCookie, viewGrantHeaders } from "@/lib/server/view-grants";
+
 export const dynamic = "force-dynamic";
 
 const PREFIX = "/api/";
@@ -50,11 +52,13 @@ async function handle(request: NextRequest): Promise<NextResponse> {
 
   const hasBody = method !== "GET" && method !== "HEAD" && request.body !== null;
   const signal = AbortSignal.any([request.signal, AbortSignal.timeout(UPSTREAM_TIMEOUT_MS)]);
+  const upstreamHeaders = forwardRequestHeaders(request.headers, session?.at ?? null, clientHeaders(request));
+  for (const [name, value] of Object.entries(viewGrantHeaders(request.cookies))) upstreamHeaders.set(name, value);
   let upstream: Response;
   try {
     upstream = await fetch(`${env.appApiUrl}/${path}${request.nextUrl.search}`, {
       method,
-      headers: forwardRequestHeaders(request.headers, session?.at ?? null, clientHeaders(request)),
+      headers: upstreamHeaders,
       body: hasBody ? request.body : undefined,
       // Streams the body through instead of buffering it (Node's fetch needs this for a stream body).
       ...(hasBody ? { duplex: "half" } : {}),
@@ -82,6 +86,21 @@ async function handle(request: NextRequest): Promise<NextResponse> {
     // Signed out and reading something that is not public: nothing to clear, the page offers to sign in.
     if (!session) return json(401, valid ? body : errorBody("signed_out", "Sign in to read this.", "Sign in, then open it again."));
     return json(401, valid ? body : errorBody("signed_out", "The service did not accept this sign-in.", "Sign in again."), clearSession);
+  }
+
+  const visit = /^v1\/sheets\/([a-z0-9]+)\/visits$/.exec(path);
+  if (method === "POST" && visit && upstream.ok) {
+    const body = await upstream.json() as { view_grant?: string };
+    return json(200, { ok: true }, response => {
+      if (body.view_grant && /^[a-f0-9]{64}$/.test(body.view_grant)) {
+        const name = viewGrantCookie(visit[1]);
+        const previous = request.cookies.getAll().filter(cookie => /^calc-view-[a-z0-9]+$/.test(cookie.name) && cookie.name !== name);
+        for (const cookie of previous.slice(0, Math.max(0, previous.length - 19))) response.cookies.delete(cookie.name);
+        response.cookies.set(name, body.view_grant, { httpOnly: true, secure: request.nextUrl.protocol === "https:", sameSite: "lax", path: "/", maxAge: 30 * 24 * 60 * 60 });
+      }
+      if (rotated && session) writeSession(response, session);
+      if (state.kind === "signed_out" && state.clear) clearSession(response);
+    });
   }
 
   const bodyless = method === "HEAD" || upstream.status === 204 || upstream.status === 205 || upstream.status === 304;

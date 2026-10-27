@@ -1,7 +1,7 @@
 //! Turning what people type into ids: a sheet by its id, its link or its exact title; a copy by id or name; a
 //! folder by id, path or name; a tab by name or id; a version by number or name.
 
-use silicon_calc_client::{Folder, Line, ListSheets, Scope, Sheet, SheetCopy, Tab, TabRef, a1};
+use silicon_calc_client::{Folder, Line, ListSheets, Scope, Sheet, SheetCopy, Tab, a1};
 
 use crate::ctx::Ctx;
 use crate::error::{CliError, CliResult};
@@ -138,11 +138,6 @@ impl Target {
     pub fn tab(&self, name: Option<&str>) -> CliResult<&Tab> {
         find_tab(&self.tabs, name, &self.place())
     }
-
-    /// A tab by name or id, as requests name it (its id).
-    pub fn tab_ref(&self, name: Option<&str>) -> CliResult<TabRef> {
-        Ok(TabRef::Id(self.tab(name)?.id))
-    }
 }
 
 /// A tab in `tabs` by name (exact, then any case) or id; none is the first tab.
@@ -256,6 +251,9 @@ pub fn split_range(arg: Option<&str>, tab_flag: Option<&str>) -> CliResult<(Opti
 
 /// A folder by id, path (`Finance/Q3`) or name.
 pub async fn folder(ctx: &Ctx, arg: &str) -> CliResult<Folder> {
+    if let Some(id) = id_from_link(arg) {
+        return Ok(ctx.client.folder(&id).await?.folder);
+    }
     let arg = arg.trim().trim_matches('/');
     if arg.is_empty() {
         return Err(CliError::usage("The folder is empty.", "Name a folder by its id, its path (Finance/Q3) or its name."));

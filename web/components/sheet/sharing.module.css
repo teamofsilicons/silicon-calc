@@ -1,0 +1,16 @@
+.gate { display: grid; gap: 20px; text-align: left; }
+.gate > * { justify-self: stretch; }
+.gate > button { justify-self: start; }
+.dialog { width: min(calc(100vw - 32px), 560px); }
+.dialog > div:first-child { position: sticky; top: 0; z-index: 1; background: var(--surface-raised); }
+.dialog .section { padding: 0; }
+.dialog .section h2 { margin: 0; font-size: var(--text-lg); }
+.dialog .section p { margin: 0; }
+.history { border-top: 1px solid var(--border); padding-top: 16px; }
+.history summary { cursor: pointer; padding-block: 6px; }
+.historyBody { display: grid; gap: 12px; margin-top: 12px; }
+.history ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 16px; }
+.viewer { display: grid; gap: 4px; overflow-wrap: anywhere; }
+.email { font-weight: 500; }
+.detail { font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
+.pager { display: flex; justify-content: space-between; align-items: center; gap: 12px; }

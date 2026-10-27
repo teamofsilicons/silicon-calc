@@ -63,7 +63,9 @@ impl TabRef {
 pub(crate) fn find_tab<'a>(wb: &'a Workbook, r: &TabRef) -> ApiResult<&'a Tab> {
     let found = match r {
         TabRef::Id(id) => wb.tab(*id).or_else(|| wb.tab_by_name(&id.to_string())),
-        TabRef::Name(n) => wb.tab_by_name(n).or_else(|| n.parse::<u32>().ok().and_then(|id| wb.tab(id))),
+        TabRef::Name(n) => wb
+            .tab_by_name(n)
+            .or_else(|| n.parse::<u32>().ok().and_then(|id| wb.tab(id))),
     };
     found.ok_or_else(|| no_such_tab(r))
 }
@@ -79,12 +81,15 @@ pub(crate) fn no_such_tab(r: &TabRef) -> ApiError {
 
 /// A time kept as Unix seconds, as answers show it.
 pub(crate) fn unix_rfc3339(secs: i64) -> String {
-    OffsetDateTime::from_unix_timestamp(secs).map(rfc3339).unwrap_or_default()
+    OffsetDateTime::from_unix_timestamp(secs)
+        .map(rfc3339)
+        .unwrap_or_default()
 }
 
 /// An account as answers show it, or the "deleted account" stand-in.
 pub(crate) fn account_json(a: Option<&Account>, uuid: Uuid) -> Value {
-    serde_json::to_value(a.cloned().unwrap_or_else(|| Account::unknown(uuid))).unwrap_or(Value::Null)
+    serde_json::to_value(a.cloned().unwrap_or_else(|| Account::unknown(uuid)))
+        .unwrap_or(Value::Null)
 }
 
 /// An account known only by its uuid, until `resolve_tab_accounts` fills it in.
@@ -98,7 +103,7 @@ pub(crate) fn tab_json(tab: &Tab, index: usize, used: Option<Rect>) -> Value {
         None => Value::Null,
         Some(c) => json!({
             "language": c.language, "code": c.code, "inputs": c.inputs, "run_by": account_stub(&c.run_by),
-            "run_at": unix_rfc3339(c.run_at), "keep_updated": c.keep_updated,
+            "run_at": unix_rfc3339(c.run_at),
         }),
     };
     json!({
@@ -106,24 +111,29 @@ pub(crate) fn tab_json(tab: &Tab, index: usize, used: Option<Rect>) -> Value {
         "rows": used.map_or(0, |r| r.r2 + 1).max(MIN_ROWS), "cols": used.map_or(0, |r| r.c2 + 1).max(MIN_COLS),
         "used": used.map(|r| r.to_string()), "frozen_rows": tab.frozen_rows, "frozen_cols": tab.frozen_cols,
         "color": tab.color, "code": code,
+        "format_rules":tab.format_rules.iter().filter_map(|r|Some(json!({"id":r.id,"range":tab.pos_rect(&r.area)?.to_string(),"rule":r.kind}))).collect::<Vec<_>>(),
     })
 }
 
 /// Every tab of an open line.
 pub(crate) fn tabs_json(st: &LineState) -> Vec<Value> {
-    st.wb.tabs.iter().enumerate().map(|(i, t)| tab_json(t, i, st.used(t))).collect()
-}
-
-/// Every tab of a workbook (states that are not cached, such as old versions).
-pub(crate) fn tabs_json_of(wb: &Workbook) -> Vec<Value> {
-    wb.tabs.iter().enumerate().map(|(i, t)| tab_json(t, i, t.used_rect())).collect()
+    st.wb
+        .tabs
+        .iter()
+        .enumerate()
+        .map(|(i, t)| tab_json(t, i, st.used(t)))
+        .collect()
 }
 
 fn run_by_uuids(v: &Value, out: &mut Vec<Uuid>) {
     match v {
         Value::Array(list) => list.iter().for_each(|t| run_by_uuids(t, out)),
         Value::Object(_) => {
-            if let Some(u) = v.pointer("/code/run_by/uuid").and_then(Value::as_str).and_then(|u| Uuid::parse_str(u).ok()) {
+            if let Some(u) = v
+                .pointer("/code/run_by/uuid")
+                .and_then(Value::as_str)
+                .and_then(|u| Uuid::parse_str(u).ok())
+            {
                 out.push(u);
             }
         }
@@ -136,7 +146,10 @@ fn fill_run_by(v: &mut Value, accounts: &std::collections::HashMap<Uuid, Account
         Value::Array(list) => list.iter_mut().for_each(|t| fill_run_by(t, accounts)),
         Value::Object(_) => {
             if let Some(slot) = v.pointer_mut("/code/run_by")
-                && let Some(u) = slot.get("uuid").and_then(Value::as_str).and_then(|u| Uuid::parse_str(u).ok())
+                && let Some(u) = slot
+                    .get("uuid")
+                    .and_then(Value::as_str)
+                    .and_then(|u| Uuid::parse_str(u).ok())
             {
                 *slot = account_json(accounts.get(&u), u);
             }
@@ -186,7 +199,9 @@ pub(crate) fn cell_json(
     v.insert("r".into(), json!(r));
     v.insert("c".into(), json!(c));
     v.insert("v".into(), value_json(&cell.value));
-    v.insert("t".into(), json!(shown(wb, cell)));
+    let (text, color) = numfmt::format_value(&cell.value, wb.style_of(cell.style).num_fmt.as_deref());
+    v.insert("t".into(), json!(text));
+    if let Some(color) = color { v.insert("tc".into(), json!(color)); }
     if cell.formula.is_some()
         && let Some(f) = wb.formula_text(tab.id, r, c)
     {
@@ -196,6 +211,7 @@ pub(crate) fn cell_json(
         v.insert("s".into(), json!(cell.style));
         styles.insert(cell.style);
     }
+    if wb.has_format_rule(tab,r,c) {v.insert("cs".into(),json!(wb.displayed_style(tab,r,c)));}
     if cell.spilled {
         v.insert("spill".into(), json!(true));
     }
@@ -214,12 +230,20 @@ pub(crate) fn style_json(wb: &Workbook, id: u32) -> Value {
 
 /// The styles a set of ids names: `{"3": Style}`.
 pub(crate) fn styles_json(wb: &Workbook, ids: &BTreeSet<u32>) -> Value {
-    Value::Object(ids.iter().map(|s| (s.to_string(), style_json(wb, *s))).collect())
+    Value::Object(
+        ids.iter()
+            .map(|s| (s.to_string(), style_json(wb, *s)))
+            .collect(),
+    )
 }
 
 /// A protection: `{"id", "tab", "range" (null = the whole tab), "editors": [uuid], "description"}`.
 pub(crate) fn protection_json(wb: &Workbook, p: &Protection) -> Value {
-    let range = p.area.as_ref().and_then(|a| wb.tab(p.tab).and_then(|t| t.pos_rect(a))).map(|r| r.to_string());
+    let range = p
+        .area
+        .as_ref()
+        .and_then(|a| wb.tab(p.tab).and_then(|t| t.pos_rect(a)))
+        .map(|r| r.to_string());
     json!({"id": p.id, "tab": p.tab, "range": range, "editors": p.editors, "description": p.description})
 }
 
@@ -246,16 +270,27 @@ pub(crate) fn parse_range(text: &str, field: &str) -> ApiResult<Window> {
     let t = text.trim();
     let (_, rest) = calc_engine::addr::split_tab(t);
     let rect = Rect::parse(rest, MAX_ROWS, MAX_COLS).ok_or_else(|| {
-        ApiError::invalid_field(field, format!("\"{text}\" is not a range; ranges look like B7, A1:C9, A:C or 3:5."))
+        ApiError::invalid_field(
+            field,
+            format!("\"{text}\" is not a range; ranges look like B7, A1:C9, A:C or 3:5."),
+        )
     })?;
-    Ok(Window { rect, open_rows: rect.r2 == MAX_ROWS - 1, open_cols: rect.c2 == MAX_COLS - 1 })
+    Ok(Window {
+        rect,
+        open_rows: rect.r2 == MAX_ROWS - 1,
+        open_cols: rect.c2 == MAX_COLS - 1,
+    })
 }
 
 /// Parses one cell address (`B7`).
 pub(crate) fn parse_cell(text: &str, field: &str) -> ApiResult<CellPos> {
     let (_, rest) = calc_engine::addr::split_tab(text.trim());
-    CellPos::parse(rest)
-        .ok_or_else(|| ApiError::invalid_field(field, format!("\"{text}\" is not a cell address; addresses look like B7.")))
+    CellPos::parse(rest).ok_or_else(|| {
+        ApiError::invalid_field(
+            field,
+            format!("\"{text}\" is not a cell address; addresses look like B7."),
+        )
+    })
 }
 
 /// Parses column letters (`C`) or a column range (`A:C`) into positions.
@@ -266,7 +301,10 @@ pub(crate) fn parse_cols(text: &str, field: &str) -> ApiResult<(u32, u32)> {
         (Some(x), Some(y)) => Ok((x.min(y), x.max(y))),
         _ => match parse_range(text, field) {
             Ok(w) => Ok((w.rect.c1, w.rect.c2)),
-            Err(_) => Err(ApiError::invalid_field(field, format!("\"{text}\" is not a column range; write it like A:C or C."))),
+            Err(_) => Err(ApiError::invalid_field(
+                field,
+                format!("\"{text}\" is not a column range; write it like A:C or C."),
+            )),
         },
     }
 }
@@ -276,10 +314,15 @@ pub(crate) fn parse_rows(text: &str, field: &str) -> ApiResult<(u32, u32)> {
     let t = text.trim().replace('$', "");
     let (a, b) = t.split_once(':').unwrap_or((t.as_str(), t.as_str()));
     match (a.trim().parse::<u32>(), b.trim().parse::<u32>()) {
-        (Ok(x), Ok(y)) if x >= 1 && y >= 1 && x <= MAX_ROWS && y <= MAX_ROWS => Ok((x.min(y) - 1, x.max(y) - 1)),
+        (Ok(x), Ok(y)) if x >= 1 && y >= 1 && x <= MAX_ROWS && y <= MAX_ROWS => {
+            Ok((x.min(y) - 1, x.max(y) - 1))
+        }
         _ => match parse_range(text, field) {
             Ok(w) => Ok((w.rect.r1, w.rect.r2)),
-            Err(_) => Err(ApiError::invalid_field(field, format!("\"{text}\" is not a row range; write it like 2:4 or 3."))),
+            Err(_) => Err(ApiError::invalid_field(
+                field,
+                format!("\"{text}\" is not a row range; write it like 2:4 or 3."),
+            )),
         },
     }
 }
@@ -321,7 +364,14 @@ pub(crate) struct CellsBody {
 }
 
 /// docs/API.md cells answer for `tab` over `area` (none: the tab is empty and no range was asked for).
-pub(crate) fn cells_body(wb: &Workbook, version: i64, tab: &Tab, index: usize, used: Option<Rect>, area: Option<Rect>) -> ApiResult<CellsBody> {
+pub(crate) fn cells_body(
+    wb: &Workbook,
+    version: i64,
+    tab: &Tab,
+    index: usize,
+    used: Option<Rect>,
+    area: Option<Rect>,
+) -> ApiResult<CellsBody> {
     if let Some(a) = &area
         && area_cells(a) > MAX_CELLS_ANSWER
     {
@@ -341,7 +391,7 @@ pub(crate) fn cells_body(wb: &Workbook, version: i64, tab: &Tab, index: usize, u
         for r in a.r1..=r2 {
             for c in a.c1..=c2 {
                 let cell = tab.cell_at(CellPos::new(r, c));
-                if is_blank(&cell) {
+                if is_blank(&cell) && !wb.has_format_rule(tab,r,c) {
                     continue;
                 }
                 cells.push(cell_json(wb, tab, r, c, &cell, &mut styles, &mut uuids));
@@ -362,9 +412,19 @@ pub(crate) fn cells_body(wb: &Workbook, version: i64, tab: &Tab, index: usize, u
             in_rows(p).then(|| ((p + 1).to_string(), json!(h)))
         })
         .collect();
-    let mut hidden_rows: Vec<u32> = tab.hidden_rows.iter().filter_map(|&id| tab.rows.pos_of(id)).filter(|&p| in_rows(p)).map(|p| p + 1).collect();
+    let mut hidden_rows: Vec<u32> = tab
+        .hidden_rows
+        .iter()
+        .filter_map(|&id| tab.rows.pos_of(id))
+        .filter(|&p| in_rows(p))
+        .map(|p| p + 1)
+        .collect();
     hidden_rows.sort_unstable();
-    let mut hidden_cols: Vec<u32> = tab.hidden_cols.iter().filter_map(|&id| tab.cols.pos_of(id)).collect();
+    let mut hidden_cols: Vec<u32> = tab
+        .hidden_cols
+        .iter()
+        .filter_map(|&id| tab.cols.pos_of(id))
+        .collect();
     hidden_cols.sort_unstable();
     let merges: Vec<String> = tab
         .merges
@@ -373,7 +433,12 @@ pub(crate) fn cells_body(wb: &Workbook, version: i64, tab: &Tab, index: usize, u
         .filter(|m| area.is_some_and(|a| a.intersects(m)))
         .map(|m| m.to_string())
         .collect();
-    let charts: Vec<Value> = wb.charts.iter().filter(|c| c.tab == tab.id).map(chart_json).collect();
+    let charts: Vec<Value> = wb
+        .charts
+        .iter()
+        .filter(|c| c.tab == tab.id)
+        .map(chart_json)
+        .collect();
     let protections: Vec<Value> = wb
         .protections
         .iter()
@@ -406,15 +471,27 @@ pub(crate) fn cells_body(wb: &Workbook, version: i64, tab: &Tab, index: usize, u
 /// Fills in the accounts of a cells answer (and the editors of its protections, as accounts).
 pub(crate) async fn finish_cells(state: &AppState, body: CellsBody) -> Value {
     let CellsBody { mut json, uuids } = body;
-    let parsed: Vec<Uuid> = uuids.iter().filter_map(|u| Uuid::parse_str(u).ok()).collect();
+    let parsed: Vec<Uuid> = uuids
+        .iter()
+        .filter_map(|u| Uuid::parse_str(u).ok())
+        .collect();
     let accounts = state.accounts.get_map(parsed).await;
     let by_cells: BTreeSet<String> = json["cells"]
         .as_array()
-        .map(|cells| cells.iter().filter_map(|c| c["by"].as_str().map(str::to_owned)).collect())
+        .map(|cells| {
+            cells
+                .iter()
+                .filter_map(|c| c["by"].as_str().map(str::to_owned))
+                .collect()
+        })
         .unwrap_or_default();
     let map: Map<String, Value> = by_cells
         .iter()
-        .filter_map(|u| Uuid::parse_str(u).ok().map(|id| (u.clone(), account_json(accounts.get(&id), id))))
+        .filter_map(|u| {
+            Uuid::parse_str(u)
+                .ok()
+                .map(|id| (u.clone(), account_json(accounts.get(&id), id)))
+        })
         .collect();
     json["accounts"] = Value::Object(map);
     if let Some(list) = json["protections"].as_array_mut() {
@@ -438,7 +515,9 @@ pub(crate) async fn finish_cells(state: &AppState, body: CellsBody) -> Value {
 fn plain(v: &calc_engine::Value) -> Value {
     match v {
         calc_engine::Value::Empty => Value::Null,
-        calc_engine::Value::Number(n) => serde_json::Number::from_f64(*n).map(Value::Number).unwrap_or(Value::Null),
+        calc_engine::Value::Number(n) => serde_json::Number::from_f64(*n)
+            .map(Value::Number)
+            .unwrap_or(Value::Null),
         calc_engine::Value::Text(s) => Value::String(s.to_string()),
         calc_engine::Value::Bool(b) => Value::Bool(*b),
         calc_engine::Value::Error(e) => Value::String(e.as_str().to_owned()),
@@ -447,7 +526,9 @@ fn plain(v: &calc_engine::Value) -> Value {
 
 /// `format=values`: the range as rows of plain values.
 pub(crate) fn values_body(tab: &Tab, version: i64, area: Option<Rect>) -> ApiResult<Value> {
-    let Some(a) = area else { return Ok(json!({"version": version, "range": null, "values": []})) };
+    let Some(a) = area else {
+        return Ok(json!({"version": version, "range": null, "values": []}));
+    };
     if area_cells(&a) > MAX_CELLS_ANSWER {
         return Err(too_big(area_cells(&a), MAX_CELLS_ANSWER));
     }
@@ -471,7 +552,9 @@ fn csv_field(out: &mut String, text: &str) {
 
 /// `format=csv`: the range's shown values as CSV.
 pub(crate) fn csv_body(wb: &Workbook, tab: &Tab, area: Option<Rect>) -> ApiResult<String> {
-    let Some(a) = area else { return Ok(String::new()) };
+    let Some(a) = area else {
+        return Ok(String::new());
+    };
     if area_cells(&a) > MAX_CELLS_CSV {
         return Err(too_big(area_cells(&a), MAX_CELLS_CSV));
     }
@@ -492,7 +575,10 @@ pub(crate) fn csv_body(wb: &Workbook, tab: &Tab, area: Option<Rect>) -> ApiResul
 }
 
 /// What viewers are told about cells: `{"tab": 1, …cell}` for each position, with styles and author uuids.
-pub(crate) fn event_cells(wb: &Workbook, positions: &BTreeSet<(TabId, u32, u32)>) -> (Vec<Value>, Value, BTreeSet<String>) {
+pub(crate) fn event_cells(
+    wb: &Workbook,
+    positions: &BTreeSet<(TabId, u32, u32)>,
+) -> (Vec<Value>, Value, BTreeSet<String>) {
     let mut styles: BTreeSet<u32> = BTreeSet::new();
     let mut uuids: BTreeSet<String> = BTreeSet::new();
     let mut cells = Vec::with_capacity(positions.len());
@@ -507,8 +593,17 @@ pub(crate) fn event_cells(wb: &Workbook, positions: &BTreeSet<(TabId, u32, u32)>
 }
 
 /// `{uuid: Account}` for a set of uuids.
-pub(crate) async fn accounts_map(state: &AppState, uuids: impl IntoIterator<Item = Uuid>) -> (Value, std::collections::HashMap<Uuid, Account>) {
+pub(crate) async fn accounts_map(
+    state: &AppState,
+    uuids: impl IntoIterator<Item = Uuid>,
+) -> (Value, std::collections::HashMap<Uuid, Account>) {
     let accounts = state.accounts.get_map(uuids).await;
-    let map: BTreeMap<String, Value> = accounts.iter().map(|(u, a)| (u.to_string(), account_json(Some(a), *u))).collect();
-    (serde_json::to_value(map).unwrap_or_else(|_| json!({})), accounts)
+    let map: BTreeMap<String, Value> = accounts
+        .iter()
+        .map(|(u, a)| (u.to_string(), account_json(Some(a), *u)))
+        .collect();
+    (
+        serde_json::to_value(map).unwrap_or_else(|_| json!({})),
+        accounts,
+    )
 }

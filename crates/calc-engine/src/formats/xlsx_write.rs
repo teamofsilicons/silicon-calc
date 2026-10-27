@@ -17,7 +17,7 @@ use crate::{
     },
     model::{Chart, Tab},
     numfmt::is_date_format,
-    style::{BorderStyle, HAlign, Style, VAlign},
+    style::{BorderStyle, CellControl, HAlign, Style, VAlign},
     value::{ErrorKind, Value},
     workbook::Workbook,
 };
@@ -68,7 +68,7 @@ fn xl_err(e: rust_xlsxwriter::XlsxError) -> FormatError {
     FormatError::write(FORMAT, e.to_string())
 }
 
-fn to_format(s: &Style) -> XlFormat {
+pub(super) fn to_format(s: &Style) -> XlFormat {
     let mut f = XlFormat::new();
     if s.bold {
         f = f.set_bold();
@@ -108,6 +108,8 @@ fn to_format(s: &Style) -> XlFormat {
     if s.wrap {
         f = f.set_text_wrap();
     }
+    if s.rotation != 0 { f = f.set_rotation(if s.rotation == 255 { 270 } else { s.rotation }); }
+    if matches!(s.control, Some(CellControl::Checkbox { checked: None, .. })) { f = f.set_checkbox(); }
     if let Some(code) = &s.num_fmt {
         f = f.set_num_format(code.as_str());
     }
@@ -281,6 +283,7 @@ pub(crate) fn export(wb: &Workbook, opts: &ExportOptions) -> Result<Vec<u8>, For
         let ws = book.add_worksheet();
         ws.set_name(names.tab_name(t).unwrap_or_else(|| format!("Tab {t}"))).map_err(xl_err)?;
         write_tab(wb, tab, ws, &mut formats, &names, &written, opts.values_only)?;
+        super::conditional::write(wb, tab, ws)?;
     }
     for n in &wb.names {
         if n.tab.is_some_and(|t| !written.contains(&t)) {
@@ -288,8 +291,9 @@ pub(crate) fn export(wb: &Workbook, opts: &ExportOptions) -> Result<Vec<u8>, For
         }
         let text = n.text.trim_start_matches('=');
         let text = match parse_formula(text, 0, 0, &wb.names()) {
+            Ok(e) if super::programs::uses_javascript(wb, &e) => continue,
             Ok(e) if reads_other_tabs(&e, &written) => continue,
-            Ok(e) => to_a1(&for_excel(&e, 0), 0, 0, &names),
+            Ok(e) => to_a1(&for_excel(&super::programs::portable_expr(wb, &e, n.tab.unwrap_or(tabs[0]), 0, 0), 0), 0, 0, &names),
             Err(_) => text.to_owned(),
         };
         let full = match n.tab.and_then(|t| names.tab_name(t)) {
@@ -299,7 +303,25 @@ pub(crate) fn export(wb: &Workbook, opts: &ExportOptions) -> Result<Vec<u8>, For
         // A name Excel doesn't allow is left out rather than failing the download.
         let _ = book.define_name(full, &format!("={text}"));
     }
-    book.save_to_buffer().map_err(xl_err)
+    let mut extras = Vec::new();
+    for &t in &tabs {
+        let tab = wb.tab(t).expect("listed");
+        let mut cells = Vec::new();
+        tab.for_each_occupied(|rid, cid, _, _| {
+            let cell = tab.cell_by_id(rid, cid);
+            let style = wb.style_of(cell.style);
+            if (style.clip || style.control.is_some()) && let (Some(row), Some(col)) = (tab.rows.pos_of(rid), tab.cols.pos_of(cid)) {
+                cells.push(super::cell_controls::CellExtra { row, col, clip: style.clip, control: style.control.clone() });
+            }
+        });
+        if !cells.is_empty() { extras.push((names.tab_name(t).expect("tab name"), cells)); }
+    }
+    let bytes=super::cell_controls::append(book.save_to_buffer().map_err(xl_err)?, &extras)?;
+    let rules=tabs.iter().filter_map(|t| {let tab=wb.tab(*t)?;if tab.format_rules.is_empty(){return None;}Some((names.tab_name(*t)?,wb.capture_tab(*t)?.format_rules))}).collect::<Vec<_>>();
+    let bytes = super::conditional::append(bytes,&rules)?;
+    let names=tabs.iter().map(|id|(*id,names.tab_name(*id).expect("tab name"))).collect::<Vec<_>>();
+    let programs=super::programs::encode(wb,opts,&names)?;
+    super::programs::append_package(bytes,programs.as_deref(),false)
 }
 
 fn write_tab(
@@ -365,10 +387,19 @@ fn write_tab(
             continue;
         }
         let f = formats.get(wb, cell.style).clone();
+        if let Some(CellControl::Dropdown { options }) = &wb.style_of(cell.style).control {
+            // Excel limits an inline list to 255 characters and uses commas as separators.
+            // Longer/custom rules still round-trip through the Calc XML part above.
+            if options.iter().all(|s| !s.contains(',')) && options.join(",").chars().count() <= 255 {
+                let validation = rust_xlsxwriter::DataValidation::new().allow_list_strings(options).map_err(xl_err)?;
+                ws.add_data_validation(r, c as u16, r, c as u16, &validation).map_err(xl_err)?;
+            }
+        }
         let group = cell.formula.and_then(|g| wb.group(g));
         match group {
-            Some(g) if !values_only && !reads_other_tabs(&g.expr, written) => {
-                let text = to_a1(&for_excel(&g.expr, r), r, c, names);
+            Some(g) if !values_only && !reads_other_tabs(&g.expr, written) && !super::programs::uses_javascript(wb,&g.expr) => {
+                let portable=super::programs::portable_expr(wb,&g.expr,tab.id,r,c);
+                let text = to_a1(&for_excel(&portable, r), r, c, names);
                 let formula = Formula::new(&text).set_result(result_text(&cell.value));
                 let spill = wb.spills.get(&(tab.id, rid, cid)).copied();
                 let res = match spill {

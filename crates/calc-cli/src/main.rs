@@ -2,7 +2,6 @@
 
 mod auth;
 mod cmd_cells;
-mod cmd_code;
 mod cmd_comments;
 mod cmd_copies;
 mod cmd_files;
@@ -34,9 +33,9 @@ const ABOUT: &str = "Silicon Calc: spreadsheets Carbons and Silicons work on tog
 const LONG_ABOUT: &str = "\
 Silicon Calc: spreadsheets Carbons and Silicons work on together.
 
-The calc command line does everything the web app does: make and share sheets, read and change cells by
-their address, run SQL, Python or JavaScript on any tab, work in copies and merge them back, comment with
-@mentions, look back through every version, and open or download every common file format.
+The calc command line makes and shares sheets, reads and changes cells by address, works in copies and
+merges them back, comments with @mentions, reads versions, and imports or downloads spreadsheet files.
+JavaScript commands run in the browser; use the web app to create or rerun a command.
 
 SHEET is a sheet's id, its link, or a title that matches exactly one sheet you can see. --copy COPY acts on
 one of the sheet's copies (its id or name) instead of the main sheet. Ranges are A1 text: B7, A1:C9, A:C
@@ -51,7 +50,6 @@ QUICK START
   calc import sales.csv                         a file as a new sheet
   calc read \"Q3 revenue\" A1:D20                 cells as a grid (--format csv or json for machines)
   calc write \"Q3 revenue\" B2 '=SUM(C2:C9)'      change cells by their address
-  calc run sql \"Q3 revenue\" -c 'select region, sum(amount) from Sales group by 1'
   calc copies new \"Q3 revenue\" \"Try weekly buckets\"
   calc comments add \"Q3 revenue\" B2:B9 '@c:ada March looks low'
   calc watch \"Q3 revenue\" --only comment --mentions --count 1
@@ -70,7 +68,7 @@ No telemetry: calc records and sends nothing about how it is used.";
 
 #[derive(Parser)]
 #[command(name = "calc", version, about = ABOUT, long_about = LONG_ABOUT, after_help = AFTER_HELP)]
-#[command(propagate_version = true, max_term_width = 110)]
+#[command(max_term_width = 110)]
 struct Cli {
     #[command(flatten)]
     global: Global,
@@ -599,7 +597,10 @@ Examples:
         tab: Option<String>,
     },
     /// Show hidden rows or columns again
-    #[command(visible_alias = "unhide", after_help = "Example:\n  calc show \"Q3 revenue\" 3:5")]
+    #[command(
+        visible_alias = "unhide",
+        after_help = "Example:\n  calc show \"Q3 revenue\" 3:5"
+    )]
     Show {
         #[command(flatten)]
         on: On,
@@ -691,37 +692,6 @@ Examples:
         on: On,
     },
 
-    // ── Code ────────────────────────────────────────────────────────────────────────────────────────────
-    /// Run SQL, Python or JavaScript on a sheet; print the result, or write it into cells or a new tab
-    #[command(after_help = "\
-Examples:
-  calc run sql \"Q3 revenue\" -c 'select region, sum(amount) as total from Sales group by 1 order by 2 desc'
-  calc run sql \"Q3 revenue\" -c 'select * from \"By region\" limit 5' --format csv
-  calc run python \"Q3 revenue\" analysis.py --into-new-tab Forecast --keep-updated
-  calc run js \"Q3 revenue\" -c 'return calc.tab(\"Sales\").filter(r => r.amount > 1000)' --into 'Big!A1'
-  cat query.sql | calc run sql \"Q3 revenue\"
-
-Every tab is a table named as the tab is (first row = column names). SQL is DuckDB, read only. Python has
-pandas and numpy: calc.tab(\"Sales\") is a DataFrame, calc.sql(\"select …\") too; the result is
-calc.result(df) or a variable named result. JavaScript: calc.tab(\"Sales\") gives row objects; return the
-result. A tab made with --into-new-tab remembers its code and who ran it; --keep-updated reruns it whenever
-a tab it reads changes.")]
-    Run(RunCmd),
-    /// Rerun the code that made a tab, as you
-    #[command(after_help = "Example:\n  calc rerun \"Q3 revenue\" Forecast")]
-    Rerun {
-        #[command(flatten)]
-        on: On,
-        /// The tab made by code
-        tab: String,
-        /// table (default), csv, tsv or json
-        #[arg(long, short = 'f')]
-        format: Option<String>,
-        /// The table shows at most this many rows [default: 100]
-        #[arg(long, value_name = "N")]
-        max_rows: Option<usize>,
-    },
-
     // ── Copies, versions, comments ──────────────────────────────────────────────────────────────────────
     /// Copies of a sheet kept inside it: list, make, rename, delete, compare, merge back
     #[command(subcommand)]
@@ -757,7 +727,7 @@ reconnects by itself from the last version seen, so nothing is missed.")]
     },
 
     // ── Files ───────────────────────────────────────────────────────────────────────────────────────────
-    /// Download a sheet (or one tab, at any version) as xlsx, xls, ods, numbers, csv, tsv, json, parquet or pdf
+    /// Download a sheet (or one tab, at any version) as xlsx, ods, pdf, html, csv, tsv, xls, numbers, json or parquet
     #[command(after_help = "\
 Examples:
   calc download \"Q3 revenue\"                                saves \"Q3 revenue.xlsx\" here
@@ -767,7 +737,8 @@ Examples:
   calc download \"Q3 revenue\" --version \"Sent to the client\" -o sent.xlsx
 
 csv, tsv and parquet hold one tab (--tab, default the first); the others hold every tab, with formulas,
-formatting and charts wherever the format can hold them.")]
+formatting and charts wherever the format can hold them. JavaScript calculations export as values;
+XLSX and ODS also keep their code for direct reimport into Calc. Other apps may discard that code when saving.")]
     Download(DownloadCmd),
 }
 
@@ -851,10 +822,13 @@ Examples:
         parent: Option<String>,
     },
     /// List your folders, or one folder's contents
-    #[command(visible_alias = "list", after_help = "\
+    #[command(
+        visible_alias = "list",
+        after_help = "\
 Examples:
   calc folders ls
-  calc folders ls Finance/Q3")]
+  calc folders ls Finance/Q3"
+    )]
     Ls {
         /// The folder (an id, a path like Finance/Q3, or a name)
         folder: Option<String>,
@@ -915,10 +889,13 @@ Examples:
 #[derive(Subcommand)]
 enum ShareCmd {
     /// Who has a sheet or folder, with what role, and the public link
-    #[command(visible_alias = "list", after_help = "\
+    #[command(
+        visible_alias = "list",
+        after_help = "\
 Examples:
   calc share ls \"Q3 revenue\"
-  calc share ls Finance --folder")]
+  calc share ls Finance --folder"
+    )]
     Ls {
         /// The sheet (or folder)
         item: String,
@@ -1007,7 +984,10 @@ Examples:
 #[derive(Subcommand)]
 enum TabsCmd {
     /// List a sheet's tabs
-    #[command(visible_alias = "list", after_help = "Example:\n  calc tabs ls \"Q3 revenue\"")]
+    #[command(
+        visible_alias = "list",
+        after_help = "Example:\n  calc tabs ls \"Q3 revenue\""
+    )]
     Ls {
         #[command(flatten)]
         on: On,
@@ -1045,7 +1025,11 @@ Examples:
         name: String,
     },
     /// Move a tab to another position (from 1)
-    #[command(name = "move", visible_alias = "mv", after_help = "Example:\n  calc tabs move \"Q3 revenue\" Summary 1")]
+    #[command(
+        name = "move",
+        visible_alias = "mv",
+        after_help = "Example:\n  calc tabs move \"Q3 revenue\" Summary 1"
+    )]
     Move {
         #[command(flatten)]
         on: On,
@@ -1092,19 +1076,6 @@ Examples:
         /// The file's format when its name doesn't say
         #[arg(long, short = 'f')]
         format: Option<String>,
-    },
-    /// Turn a code tab's rerunning on or off
-    #[command(after_help = "\
-Examples:
-  calc tabs keep-updated \"Q3 revenue\" Forecast on
-  calc tabs keep-updated \"Q3 revenue\" Forecast off      it stays exactly as it is")]
-    KeepUpdated {
-        #[command(flatten)]
-        on: On,
-        /// The tab made by code
-        tab: String,
-        /// on or off
-        state: String,
     },
 }
 
@@ -1246,7 +1217,10 @@ struct StyleCmd {
 #[derive(Subcommand)]
 enum NamesCmd {
     /// List the sheet's defined names
-    #[command(visible_alias = "list", after_help = "Example:\n  calc names ls \"Q3 revenue\"")]
+    #[command(
+        visible_alias = "list",
+        after_help = "Example:\n  calc names ls \"Q3 revenue\""
+    )]
     Ls {
         #[command(flatten)]
         on: On,
@@ -1289,7 +1263,10 @@ Examples:
 #[derive(Subcommand)]
 enum ChartCmd {
     /// List the charts (of one tab, or of every tab)
-    #[command(visible_alias = "list", after_help = "Example:\n  calc chart ls \"Q3 revenue\"")]
+    #[command(
+        visible_alias = "list",
+        after_help = "Example:\n  calc chart ls \"Q3 revenue\""
+    )]
     Ls {
         #[command(flatten)]
         on: On,
@@ -1341,41 +1318,16 @@ The first row and column may be labels. Kinds: line, bar, column, area, pie, sca
     },
 }
 
-#[derive(Args)]
-struct RunCmd {
-    /// sql, python (py) or javascript (js)
-    language: String,
-    #[command(flatten)]
-    on: On,
-    /// A file holding the code (- reads stdin)
-    file: Option<String>,
-    /// The code itself
-    #[arg(short = 'c', long = "code", value_name = "CODE", allow_hyphen_values = true)]
-    code: Option<String>,
-    /// Write the result into a new tab made by this code (it remembers the code and who ran it)
-    #[arg(long, value_name = "NAME")]
-    into_new_tab: Option<String>,
-    /// Write the result into cells, from this top-left cell: 'Sales!E1' or E1
-    #[arg(long, value_name = "CELL")]
-    into: Option<String>,
-    /// With --into-new-tab: rerun whenever a tab the code reads changes
-    #[arg(long)]
-    keep_updated: bool,
-    /// How the result prints: table (default), csv, tsv or json
-    #[arg(long, short = 'f')]
-    format: Option<String>,
-    /// The table shows at most this many rows [default: 100]
-    #[arg(long, value_name = "N")]
-    max_rows: Option<usize>,
-}
-
 #[derive(Subcommand)]
 enum CopiesCmd {
     /// A sheet's copies, as a tree (copies of copies under their parents)
-    #[command(visible_alias = "list", after_help = "\
+    #[command(
+        visible_alias = "list",
+        after_help = "\
 Examples:
   calc copies ls \"Q3 revenue\"
-  calc copies ls \"Q3 revenue\" --all        merged and deleted ones too")]
+  calc copies ls \"Q3 revenue\" --all        merged and deleted ones too"
+    )]
     Ls {
         /// The sheet
         sheet: String,
@@ -1397,7 +1349,9 @@ Then work in it with --copy: calc write \"Q3 revenue\" B2 0 --copy \"Try weekly 
         name: String,
     },
     /// Rename a copy
-    #[command(after_help = "Example:\n  calc copies rename \"Q3 revenue\" \"Try weekly buckets\" \"Weekly buckets\"")]
+    #[command(
+        after_help = "Example:\n  calc copies rename \"Q3 revenue\" \"Try weekly buckets\" \"Weekly buckets\""
+    )]
     Rename {
         /// The sheet
         sheet: String,
@@ -1466,10 +1420,13 @@ takes the copy's value unless --resolve or --take says otherwise.")]
 #[derive(Subcommand)]
 enum VersionsCmd {
     /// List versions, newest first
-    #[command(visible_alias = "list", after_help = "\
+    #[command(
+        visible_alias = "list",
+        after_help = "\
 Examples:
   calc versions ls \"Q3 revenue\"
-  calc versions ls \"Q3 revenue\" --all --json")]
+  calc versions ls \"Q3 revenue\" --all --json"
+    )]
     Ls {
         #[command(flatten)]
         on: On,
@@ -1523,7 +1480,9 @@ Examples:
         max_rows: Option<u32>,
     },
     /// Name a version so it's easy to find again
-    #[command(after_help = "Example:\n  calc versions name \"Q3 revenue\" 42 \"Sent to the client\"")]
+    #[command(
+        after_help = "Example:\n  calc versions name \"Q3 revenue\" 42 \"Sent to the client\""
+    )]
     Name {
         #[command(flatten)]
         on: On,
@@ -1582,7 +1541,9 @@ Examples:
         range: Option<String>,
     },
     /// Undo everything one Carbon or Silicon changed after a version, keeping everyone else's changes
-    #[command(after_help = "Example:\n  calc versions undo-account \"Q3 revenue\" si:analyst --since 40")]
+    #[command(
+        after_help = "Example:\n  calc versions undo-account \"Q3 revenue\" si:analyst --since 40"
+    )]
     UndoAccount {
         #[command(flatten)]
         on: On,
@@ -1593,7 +1554,9 @@ Examples:
         since: String,
     },
     /// Make a new sheet holding the sheet as it was at a version
-    #[command(after_help = "Example:\n  calc versions new-sheet \"Q3 revenue\" 40 --title \"Q3 revenue as sent\"")]
+    #[command(
+        after_help = "Example:\n  calc versions new-sheet \"Q3 revenue\" 40 --title \"Q3 revenue as sent\""
+    )]
     NewSheet {
         #[command(flatten)]
         on: On,
@@ -1608,10 +1571,13 @@ Examples:
 #[derive(Subcommand)]
 enum CommentsCmd {
     /// List a sheet's comment threads (open ones by default)
-    #[command(visible_alias = "list", after_help = "\
+    #[command(
+        visible_alias = "list",
+        after_help = "\
 Examples:
   calc comments ls \"Q3 revenue\"
-  calc comments ls \"Q3 revenue\" --all --tab Sales --json")]
+  calc comments ls \"Q3 revenue\" --all --tab Sales --json"
+    )]
     Ls {
         #[command(flatten)]
         on: On,
@@ -1655,7 +1621,9 @@ it through Silicon Ting.")]
         tab: Option<String>,
     },
     /// Reply in a thread
-    #[command(after_help = "Example:\n  calc comments reply 019a… \"Three fewer working days; see Notes!A1.\"")]
+    #[command(
+        after_help = "Example:\n  calc comments reply 019a… \"Three fewer working days; see Notes!A1.\""
+    )]
     Reply {
         /// The thread's id
         thread: String,
@@ -1740,7 +1708,7 @@ struct WatchCmd {
 struct DownloadCmd {
     #[command(flatten)]
     on: On,
-    /// xlsx (default), xls, ods, numbers, csv, tsv, json, parquet or pdf [default: from -o's name, else xlsx]
+    /// xlsx (default), ods, pdf, html, csv, tsv, xls, numbers, json or parquet [default: from -o's name, else xlsx]
     #[arg(long, short = 'f')]
     format: Option<String>,
     /// Where to save: a file, a folder, or - for stdout [default: the sheet's title, here]
@@ -1760,14 +1728,6 @@ struct DownloadCmd {
     force: bool,
 }
 
-fn on_off(s: &str, what: &str) -> CliResult<bool> {
-    match s.trim().to_ascii_lowercase().as_str() {
-        "on" | "yes" | "true" | "1" => Ok(true),
-        "off" | "no" | "false" | "0" => Ok(false),
-        other => Err(CliError::usage(format!("\"{other}\" is neither on nor off."), format!("Write {what} on, or {what} off."))),
-    }
-}
-
 /// The guide, or the parts of it whose heading names `topic`.
 fn docs_part(topic: &str) -> CliResult<String> {
     let topic = topic.trim().to_lowercase();
@@ -1785,25 +1745,58 @@ fn docs_part(topic: &str) -> CliResult<String> {
     }
     let stem = |w: &str| -> String {
         let w = w.trim_matches(|c: char| !c.is_alphanumeric());
-        let w = w.strip_suffix("ies").or_else(|| w.strip_suffix('s')).or_else(|| w.strip_suffix('y')).unwrap_or(w);
+        let w = w
+            .strip_suffix("ies")
+            .or_else(|| w.strip_suffix('s'))
+            .or_else(|| w.strip_suffix('y'))
+            .unwrap_or(w);
         w.to_owned()
     };
-    let wanted: Vec<String> = topic.split_whitespace().map(stem).filter(|w| !w.is_empty()).collect();
+    let wanted: Vec<String> = topic
+        .split_whitespace()
+        .map(stem)
+        .filter(|w| !w.is_empty())
+        .collect();
     let found: Vec<&(String, String)> = sections
         .iter()
         .filter(|(h, _)| {
-            let words: Vec<String> = h.to_lowercase().split_whitespace().map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_owned()).collect();
-            wanted.iter().all(|want| words.iter().any(|w| w.starts_with(want.as_str())))
+            let words: Vec<String> = h
+                .to_lowercase()
+                .split_whitespace()
+                .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_owned())
+                .collect();
+            wanted
+                .iter()
+                .all(|want| words.iter().any(|w| w.starts_with(want.as_str())))
         })
         .collect();
     if found.is_empty() {
+        // A command's name (calc docs login, calc docs share): the part that shows `calc <it>` most.
+        let command = format!("calc {topic}");
+        let mut best: Option<(usize, &String)> = None;
+        for (_, text) in &sections {
+            let n = text.matches(command.as_str()).count();
+            if n > 0 && best.is_none_or(|(m, _)| n > m) {
+                best = Some((n, text));
+            }
+        }
+        if let Some((_, text)) = best {
+            return Ok(text.trim_end().to_owned());
+        }
         let names: Vec<&str> = sections.iter().map(|(h, _)| h.as_str()).collect();
         return Err(CliError::usage(
             format!("The guide has no part about \"{topic}\"."),
-            format!("Its parts: {}. calc docs prints all of it.", names.join(", ")),
+            format!(
+                "Its parts: {}. calc docs prints all of it.",
+                names.join(" · ")
+            ),
         ));
     }
-    Ok(found.iter().map(|(_, t)| t.trim_end()).collect::<Vec<_>>().join("\n\n"))
+    Ok(found
+        .iter()
+        .map(|(_, t)| t.trim_end())
+        .collect::<Vec<_>>()
+        .join("\n\n"))
 }
 
 async fn run(ctx: &Ctx, command: Command) -> CliResult<()> {
@@ -1843,25 +1836,64 @@ async fn run(ctx: &Ctx, command: Command) -> CliResult<()> {
         }
         Command::Meta => lib::meta(ctx).await,
         Command::Lookup { id } => lib::lookup(ctx, &id).await,
-        Command::Ls { shared, trash, folder, q, limit, all } => lib::ls(ctx, lib::LsArgs { shared, trash, folder, q, limit, all }).await,
+        Command::Ls {
+            shared,
+            trash,
+            folder,
+            q,
+            limit,
+            all,
+        } => {
+            lib::ls(
+                ctx,
+                lib::LsArgs {
+                    shared,
+                    trash,
+                    folder,
+                    q,
+                    limit,
+                    all,
+                },
+            )
+            .await
+        }
         Command::New { title, folder } => lib::new(ctx, title, folder).await,
-        Command::Import { file, title, folder, format } => lib::import(ctx, &file, title, folder, format.as_deref()).await,
+        Command::Import {
+            file,
+            title,
+            folder,
+            format,
+        } => lib::import(ctx, &file, title, folder, format.as_deref()).await,
         Command::Info { on } => lib::info(ctx, &on.sheet, on.copy.as_deref()).await,
         Command::Rename { sheet, title } => lib::rename(ctx, &sheet, &title).await,
         Command::Mv { sheet, folder } => lib::mv(ctx, &sheet, &folder).await,
         Command::Rm { sheet } => lib::rm(ctx, &sheet).await,
         Command::Restore { sheet } => lib::restore(ctx, &sheet).await,
         Command::Trash { all } => lib::trash(ctx, all).await,
-        Command::DeleteForever { sheet, confirm } => lib::delete_forever(ctx, &sheet, confirm).await,
+        Command::DeleteForever { sheet, confirm } => {
+            lib::delete_forever(ctx, &sheet, confirm).await
+        }
         Command::Transfer { sheet, to } => {
             let s = resolve::sheet(ctx, &sheet, resolve::Look::Visible).await?;
-            lib::transfer(ctx, Item::Sheet(s.id.clone()), &format!("\"{}\"", s.title), &to).await
+            lib::transfer(
+                ctx,
+                Item::Sheet(s.id.clone()),
+                &format!("\"{}\"", s.title),
+                &to,
+            )
+            .await
         }
         Command::Transfers { action } => match action {
             None => lib::transfers(ctx).await,
-            Some(TransfersCmd::Accept { id }) => lib::transfer_action(ctx, &id, TransferAction::Accept).await,
-            Some(TransfersCmd::Decline { id }) => lib::transfer_action(ctx, &id, TransferAction::Decline).await,
-            Some(TransfersCmd::Cancel { id }) => lib::transfer_action(ctx, &id, TransferAction::Cancel).await,
+            Some(TransfersCmd::Accept { id }) => {
+                lib::transfer_action(ctx, &id, TransferAction::Accept).await
+            }
+            Some(TransfersCmd::Decline { id }) => {
+                lib::transfer_action(ctx, &id, TransferAction::Decline).await
+            }
+            Some(TransfersCmd::Cancel { id }) => {
+                lib::transfer_action(ctx, &id, TransferAction::Cancel).await
+            }
         },
         Command::Folders(cmd) => match cmd {
             FoldersCmd::New { name, parent } => lib::folder_new(ctx, &name, parent).await,
@@ -1870,35 +1902,77 @@ async fn run(ctx: &Ctx, command: Command) -> CliResult<()> {
             FoldersCmd::Mv { folder, to } => lib::folder_mv(ctx, &folder, &to).await,
             FoldersCmd::Rm { folder } => lib::folder_rm(ctx, &folder).await,
             FoldersCmd::Restore { folder } => lib::folder_restore(ctx, &folder).await,
-            FoldersCmd::DeleteForever { folder, confirm } => lib::folder_delete_forever(ctx, &folder, confirm).await,
+            FoldersCmd::DeleteForever { folder, confirm } => {
+                lib::folder_delete_forever(ctx, &folder, confirm).await
+            }
             FoldersCmd::Transfer { folder, to } => {
                 let f = resolve::folder(ctx, &folder).await?;
-                lib::transfer(ctx, Item::Folder(f.id.clone()), &format!("the folder \"{}\"", f.name), &to).await
+                lib::transfer(
+                    ctx,
+                    Item::Folder(f.id.clone()),
+                    &format!("the folder \"{}\"", f.name),
+                    &to,
+                )
+                .await
             }
         },
         Command::Share(cmd) => match cmd {
             ShareCmd::Ls { item, folder } => lib::share_ls(ctx, &item, folder).await,
-            ShareCmd::Add { item, who, role, no_notify, folder } => lib::share_add(ctx, &item, &who, &role, !no_notify, folder).await,
-            ShareCmd::Role { item, who, role, folder } => lib::share_role(ctx, &item, &who, &role, folder).await,
+            ShareCmd::Add {
+                item,
+                who,
+                role,
+                no_notify,
+                folder,
+            } => lib::share_add(ctx, &item, &who, &role, !no_notify, folder).await,
+            ShareCmd::Role {
+                item,
+                who,
+                role,
+                folder,
+            } => lib::share_role(ctx, &item, &who, &role, folder).await,
             ShareCmd::Rm { item, who, folder } => lib::share_rm(ctx, &item, &who, folder).await,
             ShareCmd::Leave { item, folder } => lib::share_leave(ctx, &item, folder).await,
-            ShareCmd::Public { sheet, state, access } => lib::share_public(ctx, &sheet, &state, access.as_deref()).await,
+            ShareCmd::Public {
+                sheet,
+                state,
+                access,
+            } => lib::share_public(ctx, &sheet, &state, access.as_deref()).await,
         },
         Command::Search { text, limit } => lib::search(ctx, &text, limit).await,
         Command::Tabs(cmd) => match cmd {
             TabsCmd::Ls { on } => cmd_tabs::ls(ctx, &on.sheet, on.copy.as_deref()).await,
-            TabsCmd::Show { on, tab } => cmd_tabs::show(ctx, &on.sheet, on.copy.as_deref(), &tab).await,
-            TabsCmd::Add { on, name, at } => cmd_tabs::add(ctx, &on.sheet, on.copy.as_deref(), &name, at).await,
-            TabsCmd::Rename { on, tab, name } => cmd_tabs::rename(ctx, &on.sheet, on.copy.as_deref(), &tab, &name).await,
-            TabsCmd::Move { on, tab, to } => cmd_tabs::move_tab(ctx, &on.sheet, on.copy.as_deref(), &tab, to).await,
-            TabsCmd::Rm { on, tab } => cmd_tabs::rm(ctx, &on.sheet, on.copy.as_deref(), &tab).await,
-            TabsCmd::Color { on, tab, color } => cmd_tabs::color(ctx, &on.sheet, on.copy.as_deref(), &tab, &color).await,
-            TabsCmd::Import { on, file, replace, format } => {
-                cmd_tabs::import(ctx, &on.sheet, on.copy.as_deref(), &file, replace.as_deref(), format.as_deref()).await
+            TabsCmd::Show { on, tab } => {
+                cmd_tabs::show(ctx, &on.sheet, on.copy.as_deref(), &tab).await
             }
-            TabsCmd::KeepUpdated { on, tab, state } => {
-                let on_ = on_off(&state, "keep-updated")?;
-                cmd_tabs::keep_updated(ctx, &on.sheet, on.copy.as_deref(), &tab, on_).await
+            TabsCmd::Add { on, name, at } => {
+                cmd_tabs::add(ctx, &on.sheet, on.copy.as_deref(), &name, at).await
+            }
+            TabsCmd::Rename { on, tab, name } => {
+                cmd_tabs::rename(ctx, &on.sheet, on.copy.as_deref(), &tab, &name).await
+            }
+            TabsCmd::Move { on, tab, to } => {
+                cmd_tabs::move_tab(ctx, &on.sheet, on.copy.as_deref(), &tab, to).await
+            }
+            TabsCmd::Rm { on, tab } => cmd_tabs::rm(ctx, &on.sheet, on.copy.as_deref(), &tab).await,
+            TabsCmd::Color { on, tab, color } => {
+                cmd_tabs::color(ctx, &on.sheet, on.copy.as_deref(), &tab, &color).await
+            }
+            TabsCmd::Import {
+                on,
+                file,
+                replace,
+                format,
+            } => {
+                cmd_tabs::import(
+                    ctx,
+                    &on.sheet,
+                    on.copy.as_deref(),
+                    &file,
+                    replace.as_deref(),
+                    format.as_deref(),
+                )
+                .await
             }
         },
         Command::Read(r) => {
@@ -1916,7 +1990,9 @@ async fn run(ctx: &Ctx, command: Command) -> CliResult<()> {
             };
             cells::read(ctx, args, false).await
         }
-        Command::Cell { on, address, tab } => cells::cell(ctx, &on.sheet, &address, tab.as_deref(), on.copy.as_deref()).await,
+        Command::Cell { on, address, tab } => {
+            cells::cell(ctx, &on.sheet, &address, tab.as_deref(), on.copy.as_deref()).await
+        }
         Command::Write(w) => {
             let args = cells::WriteArgs {
                 sheet: w.on.sheet,
@@ -1935,7 +2011,15 @@ async fn run(ctx: &Ctx, command: Command) -> CliResult<()> {
             cells::write(ctx, args).await
         }
         Command::Style(s) => {
-            let tri = |yes: bool, no: bool| if yes { Some(true) } else if no { Some(false) } else { None };
+            let tri = |yes: bool, no: bool| {
+                if yes {
+                    Some(true)
+                } else if no {
+                    Some(false)
+                } else {
+                    None
+                }
+            };
             let args = cells::StyleArgs {
                 sheet: s.on.sheet,
                 range: s.range,
@@ -1959,7 +2043,13 @@ async fn run(ctx: &Ctx, command: Command) -> CliResult<()> {
             };
             cells::style(ctx, args).await
         }
-        Command::Clear { on, range, tab, formats, all } => {
+        Command::Clear {
+            on,
+            range,
+            tab,
+            formats,
+            all,
+        } => {
             let what = if all {
                 ClearWhat::All
             } else if formats {
@@ -1967,76 +2057,339 @@ async fn run(ctx: &Ctx, command: Command) -> CliResult<()> {
             } else {
                 ClearWhat::Contents
             };
-            cells::clear(ctx, &on.sheet, &range, tab.as_deref(), what, on.copy.as_deref()).await
+            cells::clear(
+                ctx,
+                &on.sheet,
+                &range,
+                tab.as_deref(),
+                what,
+                on.copy.as_deref(),
+            )
+            .await
         }
-        Command::InsertRows { on, at, count, tab } => cells::insert(ctx, &on.sheet, Axis::Rows, &at, count, tab.as_deref(), on.copy.as_deref()).await,
-        Command::InsertCols { on, at, count, tab } => cells::insert(ctx, &on.sheet, Axis::Cols, &at, count, tab.as_deref(), on.copy.as_deref()).await,
-        Command::DeleteRows { on, rows, tab } => cells::delete(ctx, &on.sheet, Axis::Rows, &rows, tab.as_deref(), on.copy.as_deref()).await,
-        Command::DeleteCols { on, cols, tab } => cells::delete(ctx, &on.sheet, Axis::Cols, &cols, tab.as_deref(), on.copy.as_deref()).await,
-        Command::MoveRows { on, rows, to, tab } => cells::move_axis(ctx, &on.sheet, Axis::Rows, &rows, &to, tab.as_deref(), on.copy.as_deref()).await,
-        Command::MoveCols { on, cols, to, tab } => cells::move_axis(ctx, &on.sheet, Axis::Cols, &cols, &to, tab.as_deref(), on.copy.as_deref()).await,
-        Command::Sort { on, range, by, header, tab } => cells::sort(ctx, &on.sheet, range.as_deref(), &by, header, tab.as_deref(), on.copy.as_deref()).await,
-        Command::Fill { on, from, to, tab } => cells::fill(ctx, &on.sheet, &from, &to, tab.as_deref(), on.copy.as_deref()).await,
-        Command::Freeze { on, rows, cols, off, tab } => cells::freeze(ctx, &on.sheet, rows, cols, off, tab.as_deref(), on.copy.as_deref()).await,
-        Command::Width { on, cols, size, tab } => cells::size(ctx, &on.sheet, Axis::Cols, &cols, &size, tab.as_deref(), on.copy.as_deref()).await,
-        Command::Height { on, rows, size, tab } => cells::size(ctx, &on.sheet, Axis::Rows, &rows, &size, tab.as_deref(), on.copy.as_deref()).await,
-        Command::Hide { on, what, tab } => cells::hide(ctx, &on.sheet, &what, false, tab.as_deref(), on.copy.as_deref()).await,
-        Command::Show { on, what, tab } => cells::hide(ctx, &on.sheet, &what, true, tab.as_deref(), on.copy.as_deref()).await,
-        Command::Merge { on, range, tab } => cells::merge(ctx, &on.sheet, &range, false, tab.as_deref(), on.copy.as_deref()).await,
-        Command::Unmerge { on, range, tab } => cells::merge(ctx, &on.sheet, &range, true, tab.as_deref(), on.copy.as_deref()).await,
+        Command::InsertRows { on, at, count, tab } => {
+            cells::insert(
+                ctx,
+                &on.sheet,
+                Axis::Rows,
+                &at,
+                count,
+                tab.as_deref(),
+                on.copy.as_deref(),
+            )
+            .await
+        }
+        Command::InsertCols { on, at, count, tab } => {
+            cells::insert(
+                ctx,
+                &on.sheet,
+                Axis::Cols,
+                &at,
+                count,
+                tab.as_deref(),
+                on.copy.as_deref(),
+            )
+            .await
+        }
+        Command::DeleteRows { on, rows, tab } => {
+            cells::delete(
+                ctx,
+                &on.sheet,
+                Axis::Rows,
+                &rows,
+                tab.as_deref(),
+                on.copy.as_deref(),
+            )
+            .await
+        }
+        Command::DeleteCols { on, cols, tab } => {
+            cells::delete(
+                ctx,
+                &on.sheet,
+                Axis::Cols,
+                &cols,
+                tab.as_deref(),
+                on.copy.as_deref(),
+            )
+            .await
+        }
+        Command::MoveRows { on, rows, to, tab } => {
+            cells::move_axis(
+                ctx,
+                &on.sheet,
+                Axis::Rows,
+                &rows,
+                &to,
+                tab.as_deref(),
+                on.copy.as_deref(),
+            )
+            .await
+        }
+        Command::MoveCols { on, cols, to, tab } => {
+            cells::move_axis(
+                ctx,
+                &on.sheet,
+                Axis::Cols,
+                &cols,
+                &to,
+                tab.as_deref(),
+                on.copy.as_deref(),
+            )
+            .await
+        }
+        Command::Sort {
+            on,
+            range,
+            by,
+            header,
+            tab,
+        } => {
+            cells::sort(
+                ctx,
+                &on.sheet,
+                range.as_deref(),
+                &by,
+                header,
+                tab.as_deref(),
+                on.copy.as_deref(),
+            )
+            .await
+        }
+        Command::Fill { on, from, to, tab } => {
+            cells::fill(
+                ctx,
+                &on.sheet,
+                &from,
+                &to,
+                tab.as_deref(),
+                on.copy.as_deref(),
+            )
+            .await
+        }
+        Command::Freeze {
+            on,
+            rows,
+            cols,
+            off,
+            tab,
+        } => {
+            cells::freeze(
+                ctx,
+                &on.sheet,
+                rows,
+                cols,
+                off,
+                tab.as_deref(),
+                on.copy.as_deref(),
+            )
+            .await
+        }
+        Command::Width {
+            on,
+            cols,
+            size,
+            tab,
+        } => {
+            cells::size(
+                ctx,
+                &on.sheet,
+                Axis::Cols,
+                &cols,
+                &size,
+                tab.as_deref(),
+                on.copy.as_deref(),
+            )
+            .await
+        }
+        Command::Height {
+            on,
+            rows,
+            size,
+            tab,
+        } => {
+            cells::size(
+                ctx,
+                &on.sheet,
+                Axis::Rows,
+                &rows,
+                &size,
+                tab.as_deref(),
+                on.copy.as_deref(),
+            )
+            .await
+        }
+        Command::Hide { on, what, tab } => {
+            cells::hide(
+                ctx,
+                &on.sheet,
+                &what,
+                false,
+                tab.as_deref(),
+                on.copy.as_deref(),
+            )
+            .await
+        }
+        Command::Show { on, what, tab } => {
+            cells::hide(
+                ctx,
+                &on.sheet,
+                &what,
+                true,
+                tab.as_deref(),
+                on.copy.as_deref(),
+            )
+            .await
+        }
+        Command::Merge { on, range, tab } => {
+            cells::merge(
+                ctx,
+                &on.sheet,
+                &range,
+                false,
+                tab.as_deref(),
+                on.copy.as_deref(),
+            )
+            .await
+        }
+        Command::Unmerge { on, range, tab } => {
+            cells::merge(
+                ctx,
+                &on.sheet,
+                &range,
+                true,
+                tab.as_deref(),
+                on.copy.as_deref(),
+            )
+            .await
+        }
         Command::Names(cmd) => match cmd {
             NamesCmd::Ls { on } => cmd_tabs::names_ls(ctx, &on.sheet, on.copy.as_deref()).await,
-            NamesCmd::Set { on, defs, clear } => cmd_tabs::names_set(ctx, &on.sheet, on.copy.as_deref(), &defs, clear).await,
-            NamesCmd::Add { on, name, reference } => cmd_tabs::names_add(ctx, &on.sheet, on.copy.as_deref(), &name, &reference).await,
-            NamesCmd::Rm { on, name } => cmd_tabs::names_rm(ctx, &on.sheet, on.copy.as_deref(), &name).await,
+            NamesCmd::Set { on, defs, clear } => {
+                cmd_tabs::names_set(ctx, &on.sheet, on.copy.as_deref(), &defs, clear).await
+            }
+            NamesCmd::Add {
+                on,
+                name,
+                reference,
+            } => cmd_tabs::names_add(ctx, &on.sheet, on.copy.as_deref(), &name, &reference).await,
+            NamesCmd::Rm { on, name } => {
+                cmd_tabs::names_rm(ctx, &on.sheet, on.copy.as_deref(), &name).await
+            }
         },
         Command::Chart(cmd) => match cmd {
-            ChartCmd::Ls { on, tab } => cmd_tabs::chart_ls(ctx, &on.sheet, on.copy.as_deref(), tab.as_deref()).await,
-            ChartCmd::Add { on, range, tab, kind, title, at, width, height, replace } => {
-                let args = cmd_tabs::ChartArgs { sheet: on.sheet, copy: on.copy, range, tab, kind, title, at, width, height, id: replace };
+            ChartCmd::Ls { on, tab } => {
+                cmd_tabs::chart_ls(ctx, &on.sheet, on.copy.as_deref(), tab.as_deref()).await
+            }
+            ChartCmd::Add {
+                on,
+                range,
+                tab,
+                kind,
+                title,
+                at,
+                width,
+                height,
+                replace,
+            } => {
+                let args = cmd_tabs::ChartArgs {
+                    sheet: on.sheet,
+                    copy: on.copy,
+                    range,
+                    tab,
+                    kind,
+                    title,
+                    at,
+                    width,
+                    height,
+                    id: replace,
+                };
                 cmd_tabs::chart_add(ctx, args).await
             }
-            ChartCmd::Rm { on, id } => cmd_tabs::chart_rm(ctx, &on.sheet, on.copy.as_deref(), &id).await,
+            ChartCmd::Rm { on, id } => {
+                cmd_tabs::chart_rm(ctx, &on.sheet, on.copy.as_deref(), &id).await
+            }
         },
-        Command::Protect { on, range, tab, editors, description } => {
-            cmd_tabs::protect(ctx, &on.sheet, on.copy.as_deref(), range.as_deref(), tab.as_deref(), &editors, description).await
+        Command::Protect {
+            on,
+            range,
+            tab,
+            editors,
+            description,
+        } => {
+            cmd_tabs::protect(
+                ctx,
+                &on.sheet,
+                on.copy.as_deref(),
+                range.as_deref(),
+                tab.as_deref(),
+                &editors,
+                description,
+            )
+            .await
         }
-        Command::Unprotect { on, id } => cmd_tabs::unprotect(ctx, &on.sheet, on.copy.as_deref(), &id).await,
-        Command::Protections { on, tab } => cmd_tabs::protections_ls(ctx, &on.sheet, on.copy.as_deref(), tab.as_deref()).await,
+        Command::Unprotect { on, id } => {
+            cmd_tabs::unprotect(ctx, &on.sheet, on.copy.as_deref(), &id).await
+        }
+        Command::Protections { on, tab } => {
+            cmd_tabs::protections_ls(ctx, &on.sheet, on.copy.as_deref(), tab.as_deref()).await
+        }
         Command::Undo { on } => cells::undo(ctx, &on.sheet, false, on.copy.as_deref()).await,
         Command::Redo { on } => cells::undo(ctx, &on.sheet, true, on.copy.as_deref()).await,
-        Command::Run(r) => {
-            let args = cmd_code::RunArgs {
-                language: r.language,
-                sheet: r.on.sheet,
-                file: r.file,
-                code: r.code,
-                into_new_tab: r.into_new_tab,
-                into: r.into,
-                keep_updated: r.keep_updated,
-                copy: r.on.copy,
-                max_rows: r.max_rows,
-                format: r.format,
-            };
-            cmd_code::run(ctx, args).await
-        }
-        Command::Rerun { on, tab, format, max_rows } => {
-            cmd_code::rerun(ctx, &on.sheet, on.copy.as_deref(), &tab, format.as_deref(), max_rows).await
-        }
         Command::Copies(cmd) => match cmd {
             CopiesCmd::Ls { sheet, all } => cmd_copies::ls(ctx, &sheet, all).await,
-            CopiesCmd::New { on, name } => cmd_copies::new(ctx, &on.sheet, on.copy.as_deref(), &name).await,
-            CopiesCmd::Rename { sheet, copy, name } => cmd_copies::rename(ctx, &sheet, &copy, &name).await,
+            CopiesCmd::New { on, name } => {
+                cmd_copies::new(ctx, &on.sheet, on.copy.as_deref(), &name).await
+            }
+            CopiesCmd::Rename { sheet, copy, name } => {
+                cmd_copies::rename(ctx, &sheet, &copy, &name).await
+            }
             CopiesCmd::Rm { sheet, copy } => cmd_copies::rm(ctx, &sheet, &copy).await,
-            CopiesCmd::Compare { sheet, copy, limit } => cmd_copies::compare(ctx, &sheet, &copy, limit).await,
-            CopiesCmd::Merge { sheet, copy, take, tab, range, resolve, dry_run, close } => {
-                cmd_copies::merge(ctx, cmd_copies::MergeArgs { sheet, copy, take, tabs: tab, range, resolve, dry_run, close }).await
+            CopiesCmd::Compare { sheet, copy, limit } => {
+                cmd_copies::compare(ctx, &sheet, &copy, limit).await
+            }
+            CopiesCmd::Merge {
+                sheet,
+                copy,
+                take,
+                tab,
+                range,
+                resolve,
+                dry_run,
+                close,
+            } => {
+                cmd_copies::merge(
+                    ctx,
+                    cmd_copies::MergeArgs {
+                        sheet,
+                        copy,
+                        take,
+                        tabs: tab,
+                        range,
+                        resolve,
+                        dry_run,
+                        close,
+                    },
+                )
+                .await
             }
         },
         Command::Versions(cmd) => match cmd {
-            VersionsCmd::Ls { on, limit, all } => cmd_versions::ls(ctx, &on.sheet, on.copy.as_deref(), limit, all).await,
-            VersionsCmd::Show { on, version, limit } => cmd_versions::show(ctx, &on.sheet, on.copy.as_deref(), &version, limit).await,
-            VersionsCmd::Read { on, version, range, tab, format, formulas, styles, max_rows } => {
+            VersionsCmd::Ls { on, limit, all } => {
+                cmd_versions::ls(ctx, &on.sheet, on.copy.as_deref(), limit, all).await
+            }
+            VersionsCmd::Show { on, version, limit } => {
+                cmd_versions::show(ctx, &on.sheet, on.copy.as_deref(), &version, limit).await
+            }
+            VersionsCmd::Read {
+                on,
+                version,
+                range,
+                tab,
+                format,
+                formulas,
+                styles,
+                max_rows,
+            } => {
                 let args = cells::ReadArgs {
                     sheet: on.sheet,
                     range,
@@ -2051,21 +2404,65 @@ async fn run(ctx: &Ctx, command: Command) -> CliResult<()> {
                 };
                 cells::read(ctx, args, true).await
             }
-            VersionsCmd::Name { on, version, name } => cmd_versions::name(ctx, &on.sheet, on.copy.as_deref(), &version, &name).await,
-            VersionsCmd::Unname { on, version } => cmd_versions::unname(ctx, &on.sheet, on.copy.as_deref(), &version).await,
-            VersionsCmd::Compare { on, from, to, tab, range, limit } => {
-                cmd_versions::compare(ctx, cmd_versions::CompareArgs { sheet: on.sheet, copy: on.copy, from, to, tab, range, limit }).await
+            VersionsCmd::Name { on, version, name } => {
+                cmd_versions::name(ctx, &on.sheet, on.copy.as_deref(), &version, &name).await
             }
-            VersionsCmd::Restore { on, version, tab, range } => {
-                cmd_versions::restore(ctx, &on.sheet, on.copy.as_deref(), &version, tab.as_deref(), range.as_deref()).await
+            VersionsCmd::Unname { on, version } => {
+                cmd_versions::unname(ctx, &on.sheet, on.copy.as_deref(), &version).await
+            }
+            VersionsCmd::Compare {
+                on,
+                from,
+                to,
+                tab,
+                range,
+                limit,
+            } => {
+                cmd_versions::compare(
+                    ctx,
+                    cmd_versions::CompareArgs {
+                        sheet: on.sheet,
+                        copy: on.copy,
+                        from,
+                        to,
+                        tab,
+                        range,
+                        limit,
+                    },
+                )
+                .await
+            }
+            VersionsCmd::Restore {
+                on,
+                version,
+                tab,
+                range,
+            } => {
+                cmd_versions::restore(
+                    ctx,
+                    &on.sheet,
+                    on.copy.as_deref(),
+                    &version,
+                    tab.as_deref(),
+                    range.as_deref(),
+                )
+                .await
             }
             VersionsCmd::UndoAccount { on, account, since } => {
-                cmd_versions::undo_account(ctx, &on.sheet, on.copy.as_deref(), &account, &since).await
+                cmd_versions::undo_account(ctx, &on.sheet, on.copy.as_deref(), &account, &since)
+                    .await
             }
-            VersionsCmd::NewSheet { on, version, title } => cmd_versions::new_sheet(ctx, &on.sheet, on.copy.as_deref(), &version, title).await,
+            VersionsCmd::NewSheet { on, version, title } => {
+                cmd_versions::new_sheet(ctx, &on.sheet, on.copy.as_deref(), &version, title).await
+            }
         },
         Command::Comments(cmd) => match cmd {
-            CommentsCmd::Ls { on, resolved, all, tab } => {
+            CommentsCmd::Ls {
+                on,
+                resolved,
+                all,
+                tab,
+            } => {
                 let filter = if all {
                     ThreadFilter::All
                 } else if resolved {
@@ -2076,15 +2473,36 @@ async fn run(ctx: &Ctx, command: Command) -> CliResult<()> {
                 cmd_comments::ls(ctx, &on.sheet, on.copy.as_deref(), filter, tab.as_deref()).await
             }
             CommentsCmd::Show { thread } => cmd_comments::show(ctx, &thread).await,
-            CommentsCmd::Add { on, place, body, tab } => {
-                cmd_comments::add(ctx, &on.sheet, on.copy.as_deref(), Some(&place), tab.as_deref(), &body).await
+            CommentsCmd::Add {
+                on,
+                place,
+                body,
+                tab,
+            } => {
+                cmd_comments::add(
+                    ctx,
+                    &on.sheet,
+                    on.copy.as_deref(),
+                    Some(&place),
+                    tab.as_deref(),
+                    &body,
+                )
+                .await
             }
             CommentsCmd::Reply { thread, body } => cmd_comments::reply(ctx, &thread, &body).await,
             CommentsCmd::Edit { comment, body } => cmd_comments::edit(ctx, &comment, &body).await,
             CommentsCmd::Rm { comment } => cmd_comments::rm(ctx, &comment).await,
-            CommentsCmd::Resolve { thread } => cmd_comments::resolve_thread(ctx, &thread, false).await,
-            CommentsCmd::Reopen { thread } => cmd_comments::resolve_thread(ctx, &thread, true).await,
-            CommentsCmd::React { comment, emoji, remove } => cmd_comments::react(ctx, &comment, &emoji, remove).await,
+            CommentsCmd::Resolve { thread } => {
+                cmd_comments::resolve_thread(ctx, &thread, false).await
+            }
+            CommentsCmd::Reopen { thread } => {
+                cmd_comments::resolve_thread(ctx, &thread, true).await
+            }
+            CommentsCmd::React {
+                comment,
+                emoji,
+                remove,
+            } => cmd_comments::react(ctx, &comment, &emoji, remove).await,
         },
         Command::Watch(w) => {
             let args = cmd_watch::WatchArgs {
@@ -2101,7 +2519,9 @@ async fn run(ctx: &Ctx, command: Command) -> CliResult<()> {
             };
             cmd_watch::watch(ctx, args).await
         }
-        Command::Presence { on, place } => cmd_watch::presence(ctx, &on.sheet, on.copy.as_deref(), place.as_deref()).await,
+        Command::Presence { on, place } => {
+            cmd_watch::presence(ctx, &on.sheet, on.copy.as_deref(), place.as_deref()).await
+        }
         Command::Download(d) => {
             let args = cmd_files::DownloadArgs {
                 sheet: d.on.sheet,
@@ -2120,7 +2540,10 @@ async fn run(ctx: &Ctx, command: Command) -> CliResult<()> {
 
 fn report(json: bool, err: &CliError) -> ExitCode {
     if json {
-        println!("{}", serde_json::to_string_pretty(&err.to_json()).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&err.to_json()).unwrap_or_default()
+        );
     } else {
         eprintln!("error: {}", err.message);
         if let Some(hint) = &err.hint {
@@ -2141,7 +2564,10 @@ fn usage_error(e: &clap::Error) -> CliError {
         .collect::<Vec<_>>()
         .join(" ");
     let message = message.trim_start_matches("error: ").to_owned();
-    CliError::usage(message, "Run the command with --help to see its arguments and examples.")
+    CliError::usage(
+        message,
+        "Run the command with --help to see its arguments and examples.",
+    )
 }
 
 fn main() -> ExitCode {
@@ -2152,11 +2578,19 @@ fn main() -> ExitCode {
             use clap::error::ErrorKind;
             let informational = matches!(
                 e.kind(),
-                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+                ErrorKind::DisplayHelp
+                    | ErrorKind::DisplayVersion
+                    | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
             );
             if informational {
                 let _ = e.print();
-                return ExitCode::from(if e.kind() == ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand { error::exit::USAGE } else { 0 });
+                return ExitCode::from(
+                    if e.kind() == ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand {
+                        error::exit::USAGE
+                    } else {
+                        0
+                    },
+                );
             }
             if wants_json {
                 return report(true, &usage_error(&e));
@@ -2174,18 +2608,44 @@ fn main() -> ExitCode {
     if matches!(command, Command::Accounts) && crate::session::home().is_err() {
         let value = auth::accounts(cli.global.api_url.clone(), cli.global.accounts_url.clone());
         if json {
-            println!("{}", serde_json::to_string_pretty(&value).unwrap_or_default());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&value).unwrap_or_default()
+            );
         } else {
             print!("{}", auth::accounts_text(&value));
         }
         return ExitCode::SUCCESS;
     }
-    let login_status = matches!(command, Command::Login(LoginArgs { command: Some(LoginCmd::Status { .. }), .. }));
-    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+    let login_status = matches!(
+        command,
+        Command::Login(LoginArgs {
+            command: Some(LoginCmd::Status { .. }),
+            ..
+        })
+    );
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
         Ok(rt) => rt,
-        Err(e) => return report(json, &CliError::new("internal", format!("calc couldn't start: {e}."), "Retry the command.")),
+        Err(e) => {
+            return report(
+                json,
+                &CliError::new(
+                    "internal",
+                    format!("calc couldn't start: {e}."),
+                    "Retry the command.",
+                ),
+            );
+        }
     };
-    let options = Options { json, quiet: cli.global.quiet, api_url: cli.global.api_url, accounts_url: cli.global.accounts_url };
+    let options = Options {
+        json,
+        quiet: cli.global.quiet,
+        api_url: cli.global.api_url,
+        accounts_url: cli.global.accounts_url,
+    };
     runtime.block_on(async move {
         let ctx = match Ctx::new(options) {
             Ok(ctx) => ctx,
@@ -2235,56 +2695,116 @@ mod tests {
     #[test]
     fn write_takes_negative_numbers_and_stdin() {
         let cli = parse(&["write", "Q3", "B2", "-5", "-", "=A1*2"]).unwrap();
-        let Some(Command::Write(w)) = cli.command else { panic!("not write") };
+        let Some(Command::Write(w)) = cli.command else {
+            panic!("not write")
+        };
         assert_eq!(w.on.sheet, "Q3");
         assert_eq!(w.address.as_deref(), Some("B2"));
         assert_eq!(w.inputs, vec!["-5", "-", "=A1*2"]);
         let cli = parse(&["write", "Q3", "--at", "A1", "--csv", "-", "--copy", "Try"]).unwrap();
-        let Some(Command::Write(w)) = cli.command else { panic!("not write") };
-        assert_eq!((w.at.as_deref(), w.csv.as_deref(), w.on.copy.as_deref()), (Some("A1"), Some("-"), Some("Try")));
+        let Some(Command::Write(w)) = cli.command else {
+            panic!("not write")
+        };
+        assert_eq!(
+            (w.at.as_deref(), w.csv.as_deref(), w.on.copy.as_deref()),
+            (Some("A1"), Some("-"), Some("Try"))
+        );
         let cli = parse(&["write", "Q3", "A1", "--", "-text"]).unwrap();
-        let Some(Command::Write(w)) = cli.command else { panic!("not write") };
+        let Some(Command::Write(w)) = cli.command else {
+            panic!("not write")
+        };
         assert_eq!(w.inputs, vec!["-text"]);
     }
 
     #[test]
-    fn run_reads_language_sheet_and_file() {
-        let cli = parse(&["run", "sql", "Q3 revenue", "-c", "select 1", "--into-new-tab", "Out", "--keep-updated"]).unwrap();
-        let Some(Command::Run(r)) = cli.command else { panic!("not run") };
-        assert_eq!((r.language.as_str(), r.on.sheet.as_str(), r.code.as_deref()), ("sql", "Q3 revenue", Some("select 1")));
-        assert!(r.keep_updated);
-        let cli = parse(&["run", "py", "k3j9xq2mpa7d", "analysis.py", "--copy", "c1"]).unwrap();
-        let Some(Command::Run(r)) = cli.command else { panic!("not run") };
-        assert_eq!((r.file.as_deref(), r.on.copy.as_deref()), (Some("analysis.py"), Some("c1")));
-    }
-
-    #[test]
     fn global_flags_go_anywhere() {
-        let cli = parse(&["read", "Q3", "A1:B2", "--json", "--api-url", "http://127.0.0.1:8770"]).unwrap();
+        let cli = parse(&[
+            "read",
+            "Q3",
+            "A1:B2",
+            "--json",
+            "--api-url",
+            "http://127.0.0.1:8770",
+        ])
+        .unwrap();
         assert!(cli.global.json);
         assert_eq!(cli.global.api_url.as_deref(), Some("http://127.0.0.1:8770"));
         let cli = parse(&["--json", "login", "status"]).unwrap();
         assert!(cli.global.json);
-        assert!(matches!(cli.command, Some(Command::Login(LoginArgs { command: Some(LoginCmd::Status { offline: false }), .. }))));
+        assert!(matches!(
+            cli.command,
+            Some(Command::Login(LoginArgs {
+                command: Some(LoginCmd::Status { offline: false }),
+                ..
+            }))
+        ));
     }
 
     #[test]
     fn usage_mistakes_are_caught() {
         assert!(parse(&["sort", "Q3"]).is_err(), "sort needs --by");
         assert!(parse(&["login", "--slt", "x", "--silicon", "si:a"]).is_err());
-        assert!(parse(&["comments", "add", "Q3", "B2"]).is_err(), "a comment needs text");
+        assert!(
+            parse(&["comments", "add", "Q3", "B2"]).is_err(),
+            "a comment needs text"
+        );
         assert!(parse(&["clear", "Q3", "A1", "--formats", "--all"]).is_err());
         assert!(parse(&["freeze", "Q3", "--rows", "1", "--off"]).is_err());
-        let e = parse(&["nonsense"]).unwrap_err();
+        let Err(e) = parse(&["nonsense"]) else {
+            panic!("calc nonsense parsed")
+        };
         let c = usage_error(&e);
         assert_eq!(c.exit, 2);
         assert!(c.message.contains("nonsense"), "{}", c.message);
     }
 
     #[test]
+    fn versions_are_arguments_of_their_commands() {
+        let cli = parse(&["read", "Q3", "--version", "40"]).unwrap();
+        let Some(Command::Read(r)) = cli.command else {
+            panic!("not read")
+        };
+        assert_eq!(r.version.as_deref(), Some("40"));
+        let cli = parse(&[
+            "download",
+            "Q3",
+            "--version",
+            "Sent to the client",
+            "-o",
+            "-",
+        ])
+        .unwrap();
+        let Some(Command::Download(d)) = cli.command else {
+            panic!("not download")
+        };
+        assert_eq!(d.version.as_deref(), Some("Sent to the client"));
+        let cli = parse(&["versions", "show", "Q3", "42"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Versions(VersionsCmd::Show { .. }))
+        ));
+        // calc --version still says which calc this is.
+        let Err(e) = parse(&["--version"]) else {
+            panic!("--version parsed as a command")
+        };
+        assert_eq!(e.kind(), clap::error::ErrorKind::DisplayVersion);
+    }
+
+    #[test]
     fn comments_take_text_with_dashes() {
-        let cli = parse(&["comments", "add", "Q3", "Sales!B2:B9", "@si:analyst", "-", "why?"]).unwrap();
-        let Some(Command::Comments(CommentsCmd::Add { place, body, .. })) = cli.command else { panic!("not add") };
+        let cli = parse(&[
+            "comments",
+            "add",
+            "Q3",
+            "Sales!B2:B9",
+            "@si:analyst",
+            "-",
+            "why?",
+        ])
+        .unwrap();
+        let Some(Command::Comments(CommentsCmd::Add { place, body, .. })) = cli.command else {
+            panic!("not add")
+        };
         assert_eq!(place, "Sales!B2:B9");
         assert_eq!(body, vec!["@si:analyst", "-", "why?"]);
     }
@@ -2293,16 +2813,37 @@ mod tests {
     fn the_guide_has_parts() {
         assert!(docs_part("").unwrap().len() > 1000);
         let copies = docs_part("copies").unwrap();
-        assert!(copies.starts_with("## Copies"), "{}", &copies[..copies.len().min(80)]);
+        assert!(
+            copies.starts_with("## Copies"),
+            "{}",
+            &copies[..copies.len().min(80)]
+        );
         assert!(docs_part("copy").unwrap().starts_with("## Copies"));
         assert!(docs_part("sign in").unwrap().starts_with("## Sign in"));
+        assert!(docs_part("Code").unwrap().starts_with("## Code"));
+        assert!(
+            docs_part("watch")
+                .unwrap()
+                .starts_with("## Live: watch and presence")
+        );
+        // Commands find the part that shows them.
+        assert!(docs_part("login").unwrap().starts_with("## Sign in"));
+        assert!(docs_part("share").unwrap().starts_with("## Sharing"));
+        assert!(docs_part("download").unwrap().starts_with("## Files"));
+        assert!(docs_part("code").unwrap().starts_with("## Code"));
+        let cells = docs_part("cells").unwrap();
+        assert!(
+            cells.starts_with("## Reading cells") && cells.contains("## Changing cells"),
+            "both parts about cells"
+        );
         assert_eq!(docs_part("zebras").unwrap_err().exit, 2);
     }
 
     #[test]
-    fn switches() {
-        assert!(on_off("ON", "x").unwrap());
-        assert!(!on_off("off", "x").unwrap());
-        assert_eq!(on_off("maybe", "x").unwrap_err().exit, 2);
+    fn code_execution_is_browser_only() {
+        assert!(parse(&["run", "sql", "Q3", "-c", "select 1"]).is_err());
+        assert!(parse(&["rerun", "Q3", "Totals"]).is_err());
+        assert!(parse(&["tabs", "keep-updated", "Q3", "Totals", "on"]).is_err());
     }
+
 }

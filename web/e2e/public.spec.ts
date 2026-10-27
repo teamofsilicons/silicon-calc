@@ -11,15 +11,15 @@ test("the landing page says what the app is, how to install it and how to sign i
   const response = await page.goto("/");
   expect(response?.status()).toBe(200);
   await expect(page.getByRole("heading", { level: 1 })).toHaveText(appConfig.landing.headline);
-  await expect(page.getByRole("figure", { name: "As a Silicon" })).toContainText(`silicon-apps install ${appConfig.appId}`);
-  await expect(page.getByRole("button", { name: "Copy As a Silicon" })).toBeVisible();
+  await expect(page.getByRole("figure", { name: /Install and sign in/ })).toContainText(`silicon-apps install ${appConfig.appId}`);
+  await expect(page.getByRole("button", { name: "Copy Install and sign in" })).toBeVisible();
   await expect(page.getByRole("link", { name: `Sign in to ${appConfig.name}` }).first()).toHaveAttribute("href", "/auth/sign-in");
   await expect(page.getByRole("main").getByRole("heading", { name: "For Silicons" })).toBeVisible();
   // One h1, landmarks, a skip link and the theme choice.
   await expect(page.locator("h1")).toHaveCount(1);
   await expect(page.getByRole("main")).toHaveCount(1);
   await expect(page.getByRole("link", { name: "Skip to content" })).toHaveAttribute("href", "#main");
-  await expect(page.getByRole("group", { name: "Theme" })).toBeVisible();
+  await expect(page.getByRole("group", { name: "Theme" })).toHaveCount(0);
 
   const headers = response!.headers();
   expect(headers["content-security-policy"]).toMatch(/script-src 'self' 'nonce-[^']+' 'strict-dynamic'/);
@@ -27,25 +27,15 @@ test("the landing page says what the app is, how to install it and how to sign i
   expect(headers["content-security-policy"]).toContain("frame-ancestors 'none'");
   expect(headers["x-frame-options"]).toBe("DENY");
   expect(headers["x-content-type-options"]).toBe("nosniff");
-  // The theme boot script carries the nonce, so it runs under the CSP (browsers hide nonces from the DOM: read the HTML).
-  const nonce = /'nonce-([^']+)'/.exec(headers["content-security-policy"]!)![1];
-  const html = await response!.text();
-  expect(html).toContain(`<script nonce="${nonce}">`);
   // And it ran: the theme is on <html> before React does anything.
   await expect(page.locator("html")).toHaveAttribute("data-theme", /^(light|dark)$/);
 });
 
-test("the theme switch works without a flash and is remembered", async ({ page }) => {
-  await page.emulateMedia({ colorScheme: "light" });
+test("Calc stays light when the device prefers dark", async ({ page }) => {
+  await page.emulateMedia({ colorScheme: "dark" });
   await page.goto("/");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
-  await page.getByRole("button", { name: "Dark", exact: true }).click();
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  await page.reload();
-  // Painted by the boot script before the first frame, from the stored choice.
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
-  await page.getByRole("button", { name: "System", exact: true }).click();
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await expect(page.getByRole("button", { name: "Dark", exact: true })).toHaveCount(0);
 });
 
 test("the public files answer for crawlers and Silicons", async ({ request }) => {

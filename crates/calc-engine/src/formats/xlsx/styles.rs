@@ -57,7 +57,8 @@ struct Xf {
     horizontal: Option<String>,
     vertical: Option<String>,
     wrap: bool,
-    rotated: bool,
+    rotation: i16,
+    control: Option<u32>,
 }
 
 /// One engine style per `cellXfs` index.
@@ -68,9 +69,43 @@ pub(crate) struct CellStyles {
     pub is_date: Vec<bool>,
     /// Styles that lost a text rotation.
     pub rotated: Vec<bool>,
+    pub controls: Vec<Option<u32>>,
 }
 
 impl CellStyles {
+    /// Resolve feature-property-bag references instead of assuming every extension is a checkbox.
+    pub fn read_controls(&mut self, xml: &[u8]) {
+        let mut bags: Vec<(String, Vec<usize>)> = Vec::new();
+        let mut r = reader(xml);
+        let mut buf = Vec::new();
+        let mut text = String::new();
+        let mut in_id = false;
+        loop {
+            buf.clear();
+            match r.read_event_into(&mut buf) {
+                Ok(Event::Start(ref e) | Event::Empty(ref e)) if name_of(e) == b"bag" => bags.push((attr(e, b"type").unwrap_or_default(), Vec::new())),
+                Ok(Event::Start(ref e)) if name_of(e) == b"bagId" => { in_id = true; text.clear(); }
+                Ok(Event::End(ref e)) if local(e.name().into_inner()) == b"bagId" => {
+                    if let (Some(bag), Ok(id)) = (bags.last_mut(), text.parse()) { bag.1.push(id); }
+                    in_id = false;
+                }
+                Ok(Event::Eof) | Err(_) => break,
+                Ok(event) if in_id => crate::formats::xml::push_text(&mut text, &event),
+                _ => {}
+            }
+        }
+        fn checkbox(bags: &[(String, Vec<usize>)], id: usize, depth: usize) -> bool {
+            if depth > 8 { return false; }
+            bags.get(id).is_some_and(|(kind, refs)| kind == "Checkbox" || refs.iter().any(|&next| checkbox(bags, next, depth + 1)))
+        }
+        let Some((_, mapped)) = bags.iter().find(|(kind, _)| kind == "XFComplements") else { return };
+        for (style, control) in self.xfs.iter_mut().zip(&self.controls) {
+            if control.and_then(|i| mapped.get(i as usize)).is_some_and(|&id| checkbox(&bags, id, 0)) {
+                style.control = Some(crate::style::CellControl::Checkbox { checked: None, unchecked: None });
+            }
+        }
+    }
+
     pub fn style(&self, xf: u32) -> Option<&Style> {
         self.xfs.get(xf as usize)
     }
@@ -153,7 +188,7 @@ pub(crate) fn read(xml: &[u8], palette: &mut Palette) -> CellStyles {
                             section = Section::None;
                         }
                     }
-                    b"extLst" if !empty => {
+                    b"extLst" if !empty && xf.is_none() => {
                         let mut b2 = Vec::new();
                         skip_element(&mut r, &mut b2);
                     }
@@ -250,8 +285,10 @@ pub(crate) fn read(xml: &[u8], palette: &mut Palette) -> CellStyles {
                         x.horizontal = attr(e, b"horizontal");
                         x.vertical = attr(e, b"vertical");
                         x.wrap = attr(e, b"wrapText").is_some_and(|v| truthy(&v));
-                        x.rotated = attr_u32(e, b"textRotation").is_some_and(|v| v != 0);
+                        let rotation = attr_u32(e, b"textRotation").unwrap_or(0);
+                        x.rotation = match rotation { 255 => 255, 0..=90 => rotation as i16, 91..=180 => 90 - rotation as i16, _ => 0 };
                     }
+                    b"xfComplement" if xf.is_some() => xf.as_mut().expect("checked").control = attr_u32(e, b"i"),
                     _ => {}
                 }
             }
@@ -348,7 +385,9 @@ pub(crate) fn read(xml: &[u8], palette: &mut Palette) -> CellStyles {
         };
         s.wrap = x.wrap;
         out.is_date.push(s.num_fmt.as_deref().is_some_and(is_date_format));
-        out.rotated.push(x.rotated);
+        s.rotation = x.rotation;
+        out.rotated.push(false);
+        out.controls.push(x.control);
         out.xfs.push(s);
     }
     out

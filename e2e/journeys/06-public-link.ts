@@ -4,10 +4,10 @@
 // comment through the link; and when the link goes off, the sheet is private again.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { type Sheet, plain, at } from '../lib/calc.ts';
-import { SALES_FILE, salesGrid } from '../lib/fixtures.ts';
+import { salesGrid } from '../lib/fixtures.ts';
 import { journey } from '../lib/journey.ts';
+import { salesSheet } from '../lib/sheets.ts';
 import { sameGrid } from '../lib/steps.ts';
 import { type CarbonPerson, world } from '../lib/world.ts';
 
@@ -18,11 +18,17 @@ export default journey('A public link shows the sheet to anyone, without signing
   let sheet: Sheet;
   let tab: number;
 
-  j.step('a Carbon opens the sales CSV and comments on it', async () => {
+  j.step('a Carbon, and a second Carbon who is not invited', async () => {
     ada = await w.carbon('Ada');
     grace = await w.carbon('Grace');
-    sheet = await ada.api.post<Sheet>('/v1/sheets/import', { query: { filename: 'sales-2026.csv', title: 'Sales 2026 (public)' }, body: readFileSync(SALES_FILE), contentType: 'text/csv' }, 201);
-    tab = (await ada.api.get<Sheet>(`/v1/sheets/${sheet.id}`)).tabs![0]!.id;
+  });
+
+  salesSheet(j, 'the Carbon', () => ada.api, 'Sales 2026 (public)', (o) => {
+    sheet = o.sheet;
+    tab = o.tab.id;
+  });
+
+  j.step('the Carbon comments on the sheet', async () => {
     await ada.api.post(`/v1/sheets/${sheet.id}/comments`, { json: { tab, range: 'E8', body: 'March is low because of a late invoice.' } }, 201);
   });
 

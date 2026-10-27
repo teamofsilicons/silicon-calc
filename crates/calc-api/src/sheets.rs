@@ -88,7 +88,8 @@ async fn meta(State(state): State<AppState>) -> Json<Value> {
             "max_cols": calc_engine::addr::MAX_COLS,
             "max_upload_bytes": state.cfg.max_upload_bytes,
             "max_cells_per_edit": crate::config::MAX_CELLS_PER_EDIT,
-            "code_timeout_seconds": state.cfg.code_timeout.as_secs(),
+            "browser_command_timeout_seconds": 60,
+            "conversion_timeout_seconds": state.cfg.code_timeout.as_secs(),
         },
     }))
 }
@@ -160,7 +161,7 @@ fn render(
         "owner": acct(row.owner),
         "folder_id": row.folder_id,
         "role": role.as_str(),
-        "public": {"enabled": row.public_enabled, "access": row.public_access},
+        "public": {"enabled": row.public_enabled, "access": row.public_access, "require_email": row.require_email},
         "version": version,
         "created_at": rfc3339(row.created_at),
         "created_by": acct(row.created_by),
@@ -326,8 +327,8 @@ pub(crate) fn prefixed(columns: &str, alias: &str) -> String {
 
 async fn list(State(state): State<AppState>, caller: Caller, QueryParams(q): QueryParams<ListQuery>) -> ApiResult<Json<Value>> {
     let scope = non_empty(q.scope.as_deref()).unwrap_or("mine").to_ascii_lowercase();
-    if !matches!(scope.as_str(), "mine" | "shared" | "trash") {
-        return Err(ApiError::invalid_field("scope", format!("There is no scope \"{scope}\"; use mine, shared or trash.")));
+    if !matches!(scope.as_str(), "all" | "mine" | "shared" | "trash") {
+        return Err(ApiError::invalid_field("scope", format!("There is no scope \"{scope}\"; use all, mine, shared or trash.")));
     }
     let limit = q.limit.unwrap_or(100);
     if !(1..=500).contains(&limit) {
@@ -387,28 +388,40 @@ async fn list(State(state): State<AppState>, caller: Caller, QueryParams(q): Que
                  order by lower(f.name), f.id"
             ),
         ),
-        (false, "shared", searching) => {
+        (false, "all" | "shared", searching) => {
             let direct_sheets = "select m.item_id from members m join sheets s on s.id = m.item_id, p
                  where m.item_kind = 'sheet' and m.account = p.me and s.owner <> p.me
                    and s.deleted_at is null and s.trashed_at is null";
             let direct_folders = "select m.item_id from members m join folders f on f.id = m.item_id, p
                  where m.item_kind = 'folder' and m.account = p.me and f.owner <> p.me
                    and f.deleted_at is null and f.trashed_at is null";
-            if searching {
-                // Searching looks inside shared folders too.
-                (
-                    shared_sheets_sql(&format!(
-                        "{direct_sheets} union select s.id from reach r join sheets s on s.folder_id = r.id, p
-                         where s.owner <> p.me and s.deleted_at is null and s.trashed_at is null"
-                    )),
-                    shared_folders_sql(&format!(
-                        "{direct_folders} union select f.id from reach r join folders f on f.id = r.id, p
-                         where f.owner <> p.me and f.trashed_at is null"
-                    )),
-                )
-            } else {
-                (shared_sheets_sql(direct_sheets), shared_folders_sql(direct_folders))
+            let mut sheet_candidates = vec![direct_sheets.to_owned()];
+            let mut folder_candidates = vec![direct_folders.to_owned()];
+            if scope == "all" {
+                // Combine before ordering and pagination, preserving the normal folder hierarchy.
+                let sheet_level = if searching { "" } else { " and s.folder_id is null" };
+                let folder_level = if searching { "" } else { " and f.parent_id is null" };
+                sheet_candidates.push(format!(
+                    "select s.id from sheets s, p where s.owner = p.me
+                     and s.deleted_at is null and s.trashed_at is null{sheet_level}"
+                ));
+                folder_candidates.push(format!(
+                    "select f.id from folders f, p where f.owner = p.me
+                     and f.deleted_at is null and f.trashed_at is null{folder_level}"
+                ));
             }
+            if searching {
+                // Searching looks inside shared folders too. UNION removes direct/inherited duplicates.
+                sheet_candidates.push(
+                    "select s.id from reach r join sheets s on s.folder_id = r.id, p
+                     where s.owner <> p.me and s.deleted_at is null and s.trashed_at is null".to_owned()
+                );
+                folder_candidates.push(
+                    "select f.id from reach r join folders f on f.id = r.id, p
+                     where f.owner <> p.me and f.trashed_at is null".to_owned()
+                );
+            }
+            (shared_sheets_sql(&sheet_candidates.join(" union ")), shared_folders_sql(&folder_candidates.join(" union ")))
         }
         _ => (
             format!(

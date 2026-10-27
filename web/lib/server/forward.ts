@@ -106,6 +106,7 @@ const PUBLIC_READS: readonly RegExp[] = [
 
 export function publicReadPath(method: string, path: string): boolean {
   const verb = method.toUpperCase();
+  if (verb === "POST" && /^v1\/sheets\/[a-z0-9]+\/visits$/.test(path)) return true;
   if (verb !== "GET" && verb !== "HEAD") return false;
   return PUBLIC_READS.some(pattern => pattern.test(path));
 }

@@ -1,0 +1,17 @@
+.guide { max-width: 900px; margin: 0 auto; padding: 48px 28px 100px; line-height: 1.7; color: var(--text); }
+.guide header { margin: 48px 0 32px; }
+.guide h1 { font-size: clamp(30px, 6vw, 48px); line-height: 1.15; letter-spacing: -0.04em; }
+.guide h2 { font-size: 25px; line-height: 1.3; margin-bottom: 20px; }
+.guide h3 { font-size: 18px; margin-top: 28px; }
+.guide p { margin: 16px 0; }
+.guide nav { display: flex; flex-wrap: wrap; gap: 12px 24px; padding: 24px 0; border-block: 1px solid var(--border); }
+.guide section { margin-top: 60px; scroll-margin-top: 24px; }
+.guide pre { --sq-r: 12px; --sq-fill: var(--surface-muted); padding: 20px; overflow-x: auto; font-size: 13px; line-height: 1.7; }
+.guide code { font-family: inherit; overflow-wrap: anywhere; }
+.guide pre code { overflow-wrap: normal; }
+.guide a { color: inherit; text-decoration: underline; text-underline-offset: 4px; }
+.table { overflow-x: auto; }
+.table table { border-collapse: collapse; width: 100%; }
+.table th, .table td { text-align: left; padding: 14px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.table td:first-child { min-width: 280px; font-size: 13px; }
+.guide li { margin: 12px 0; }
