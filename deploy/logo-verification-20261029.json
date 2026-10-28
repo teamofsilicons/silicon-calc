@@ -1,0 +1,50 @@
+{
+  "verified_at": "2026-10-28T22:04:00.638164+00:00",
+  "source_revision": "a17a39335f6a388ea00ac0eb735ddea77acb89b7",
+  "release": "source-e4c6a3e88d63ebead1f7",
+  "url": "https://calc.teamofsilicons.com",
+  "web_build_id": "Q4ZeqJxY96TpmPNC8jk8z",
+  "release_manifest_sha256": "4b66407e5e6fd965e19bd2dae51459e61079df9928b7df02b310e064e779b496",
+  "build_platform": "linux/arm64",
+  "supplied_svg_sha256": "88c09dfc3d5a10bf14282b5e53ec2cc23d36119fc306fed1fcdd1dab84c6cdbe",
+  "original_matches_live": true,
+  "checks": {
+    "typecheck": "passed",
+    "lint": "passed",
+    "unit_tests": 56,
+    "build": "passed",
+    "public_browser_tests": 3,
+    "candidate_routing": "passed",
+    "live_navigation": "chart mark visible; 3 paths; viewBox 52 53 94 94",
+    "live_assets": [
+      {
+        "endpoint": "icon",
+        "status": 200,
+        "bytes": 8168,
+        "content_type": "image/png"
+      },
+      {
+        "endpoint": "apple-icon",
+        "status": 200,
+        "bytes": 1531,
+        "content_type": "image/png"
+      },
+      {
+        "endpoint": "og.png",
+        "status": 200,
+        "bytes": 44093,
+        "content_type": "image/png"
+      },
+      {
+        "endpoint": "brand/calc-logo.svg",
+        "status": 200,
+        "bytes": 513,
+        "content_type": "image/svg+xml"
+      }
+    ]
+  },
+  "native_binaries_changed": false,
+  "deployment_backup": "backup-20261028T220208Z-6ffc77a9",
+  "evidence_directory": ".dev/logo-20261029",
+  "scope": "Branding only: navigation and sign-in mark, favicon, home screen icon, link preview; original SVG preserved."
+}
