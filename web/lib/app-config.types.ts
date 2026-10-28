@@ -36,12 +36,8 @@ export interface AppConfig {
   tagline: string;
   /** Two or three sentences for search engines, link previews and llms.txt. */
   description: string;
-  /**
-   * The app's mark: SVG path data drawn with round 2 px strokes on a 24 by 24 grid (the lucide grid: paste a lucide
-   * icon's paths, or draw your own). It sits white on a squircle of the accent (or brand blue) everywhere: the shell,
-   * the landing page, the icons and the Open Graph image.
-   */
-  mark: { paths: string[] };
+  /** The supplied logo paths and framing for its standalone navigation glyph. */
+  mark: { paths: string[]; viewBox: string; strokeWidth: number };
   /**
    * The product colour, if the app has one. It tints the mark and the landing page's wash only; actions, links and
    * focus stay brand blue on every Silicon site. Give a light and a dark value (each at least 3:1 on its page colour).

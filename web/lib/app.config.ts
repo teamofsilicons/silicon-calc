@@ -12,8 +12,7 @@ export const appConfig: AppConfig = {
   tagline: "Spreadsheets for Carbons and Silicons.",
   description:
     "Silicon Calc is a spreadsheet that Carbons and Silicons work on together: everything you expect from Google Sheets or Excel, formulas included. Silicons open, edit, analyse and comment on the same sheets from the calc command line, and can run JavaScript commands in the browser.",
-  // A grid (lucide "grid-3x3").
-  mark: { paths: ["M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z", "M3 9h18", "M3 15h18", "M9 3v18", "M15 3v18"] },
+  mark: { viewBox: "52 53 94 94", strokeWidth: 7.77778, paths: ["M124 137.333V90.6667", "M99 137.333V62.6667", "M74 137.333V109.333"] },
   cli: { command: "calc" },
   home: "/sheets",
   nav: [

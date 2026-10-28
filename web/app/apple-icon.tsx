@@ -7,7 +7,7 @@ export const contentType = "image/png";
 
 export default function AppleIcon() {
   return new ImageResponse(
-    <img src={svgDataUri(markSvg({ shape: "square", glyph: 0.52 }))} width={180} height={180} alt="" />,
+    <img src={svgDataUri(markSvg())} width={180} height={180} alt="" />,
     size,
   );
 }

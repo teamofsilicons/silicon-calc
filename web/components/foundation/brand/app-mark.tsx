@@ -1,6 +1,5 @@
 /**
- * The app's mark: its glyph (lib/app.config.ts `mark`, lucide-style paths on a 24 by 24 grid) drawn white on a squircle
- * of the app's colour (`--app-accent`, brand blue without one), as every Silicon site draws its own. Plain SVG,
+ * The supplied chart mark, in theme-aware ink beside the name like DM's navigation mark. Plain SVG,
  * server-rendered, shared by the landing page, the sign-in page and the signed-in shell.
  *
  *   <AppMark />                 28 px, the bars' size
@@ -11,19 +10,19 @@ import type { CSSProperties } from "react";
 import { appConfig } from "@/lib/app.config";
 import styles from "./app-mark.module.css";
 
-export function AppGlyph({ size = 18, strokeWidth = 2 }: { size?: number; strokeWidth?: number }) {
+export function AppGlyph({ size = 18 }: { size?: number }) {
   return (
-    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+    <svg viewBox={appConfig.mark.viewBox} width={size} height={size} fill="none" stroke="currentColor" strokeWidth={appConfig.mark.strokeWidth} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
       {appConfig.mark.paths.map(d => <path key={d} d={d} />)}
     </svg>
   );
 }
 
 export function AppMark({ size = 28, className }: { size?: number; className?: string }) {
-  const style = { "--mark-size": `${size}px`, "--sq-r": `${Math.round(size * 0.32)}px` } as CSSProperties;
+  const style = { "--mark-size": `${size}px` } as CSSProperties;
   return (
-    <span data-sq="clip" className={[styles.mark, className].filter(Boolean).join(" ")} style={style} aria-hidden="true">
-      <AppGlyph size={Math.round(size * 0.6)} strokeWidth={size >= 40 ? 1.75 : 2} />
+    <span className={[styles.mark, className].filter(Boolean).join(" ")} style={style} aria-hidden="true">
+      <AppGlyph size={size} />
     </span>
   );
 }
