@@ -1,6 +1,6 @@
 {
   "version": "0.2.0",
-  "verified_at": "2026-10-26T23:22:40.948040+00:00",
+  "verified_at": "2026-10-28T22:04:44.733511+00:00",
   "web_url": "https://calc.teamofsilicons.com",
   "api_url": "https://calc-api.teamofsilicons.com",
   "runtime": "native-systemd",
@@ -16,27 +16,29 @@
     "architecture": "arm64"
   },
   "release": {
-    "revision": "source-b10eba8f78af7645e5ba",
-    "base_git_revision": "977a4eaf73964bbf284b605afd7631a70a9ba37a",
-    "source_archive_sha256": "d57c3cea7fe9967eb38f6a8e8408241b3da96a483349de4eb83b23ec8d83aabf",
-    "release_archive_sha256": "d4e34a2c9ac89b4e433b3af21f0db3f90aa3d1b2342bd6eda0d3b1732b25c853",
-    "manifest_sha256": "b35a2d4063e858342a1453a9b500d16278f0e01c91230e63afb7ea2e3118c57f",
+    "revision": "source-e4c6a3e88d63ebead1f7",
+    "base_git_revision": "a17a39335f6a388ea00ac0eb735ddea77acb89b7",
+    "source_archive_sha256": "4e907b1eb3e6fc48613c550b96a68d54b0440f5aefb79f00e492eed5d1efc71b",
+    "release_archive_sha256": "c797d34b496d7f29af551a2e724bfaef8bef58393084a5256c2d7987f7080762",
+    "manifest_sha256": "4b66407e5e6fd965e19bd2dae51459e61079df9928b7df02b310e064e779b496",
     "api_sha256": "af385076dbdf2d4be041e9d3f21a3d27cf44c566732e365b0856e2608e720c65",
     "preflight_sha256": "7fb5758fc7248da2fb8cb445b8f4ab161375548dfd9b2b9ff3294a3bf5f7c7d7",
     "cli_sha256": "03fc1bdbd1481ea154ee9e500c86088074130f3e2e58743a0183b394d1769744",
     "api_source_revision": "source-b10eba8f78af7645e5ba",
     "cli_source_revision": "source-b10eba8f78af7645e5ba",
-    "web_source_revision": "source-b10eba8f78af7645e5ba",
-    "web_build_id": "kfmLwqdFcv_W9VZ-cdIla",
-    "build_command_id": "95c55dac-fde9-472a-9c17-fff0e9c700b9",
+    "web_source_revision": "source-e4c6a3e88d63ebead1f7",
+    "web_build_id": "Q4ZeqJxY96TpmPNC8jk8z",
+    "build_command_id": null,
     "api_build_command_id": "95c55dac-fde9-472a-9c17-fff0e9c700b9",
-    "install_command_id": "50f227ca-8999-4c78-88e2-01adfc14882f",
-    "candidate_command_id": "ebe7775f-d0d0-4373-b8f8-7eaf0012b801",
+    "install_command_id": "acd28841-12cc-4dd6-a6ca-522f13ee709c",
+    "candidate_command_id": "ce01c47a-f213-445d-a5b4-0c1b7beaaf8e",
     "api_candidate_command_id": "ebe7775f-d0d0-4373-b8f8-7eaf0012b801",
-    "build_kind": "native-and-web",
-    "native_binaries_rebuilt": true,
-    "baseline_release": "source-5704352fc1fb2491997b",
-    "release_provenance_receipt": ".dev/production/2026-10-27-shared-home/staged-release.json"
+    "build_kind": "web-only",
+    "native_binaries_rebuilt": false,
+    "baseline_release": "source-b10eba8f78af7645e5ba",
+    "release_provenance_receipt": "deploy/logo-verification-20261029.json",
+    "build_platform": "linux/arm64 container on local Mac",
+    "stage_command_id": "5e396c16-fe1c-4126-82e7-3a08b0c49861"
   },
   "commands": {
     "language": "javascript",
@@ -192,6 +194,11 @@
       "google_sheets_import_export_verified": true,
       "external_resave_preserves_calc_metadata": false,
       "production_verification_release": "source-5704352fc1fb2491997b"
+    },
+    "logo_release": {
+      "receipt": "deploy/logo-verification-20261029.json",
+      "evidence": ".dev/logo-20261029",
+      "scope": "New logo; other verification entries refer to their original release evidence."
     }
   },
   "backups": {
@@ -574,6 +581,33 @@
       "native_binaries_rebuilt": true,
       "baseline_release": "source-7b5b679ecb587ef5b18f",
       "release_provenance_receipt": ".dev/production/2026-10-27-exports/staged-release.json"
+    },
+    {
+      "verified_at": "2026-10-26T23:22:40.948040+00:00",
+      "release": {
+        "revision": "source-b10eba8f78af7645e5ba",
+        "base_git_revision": "977a4eaf73964bbf284b605afd7631a70a9ba37a",
+        "source_archive_sha256": "d57c3cea7fe9967eb38f6a8e8408241b3da96a483349de4eb83b23ec8d83aabf",
+        "release_archive_sha256": "d4e34a2c9ac89b4e433b3af21f0db3f90aa3d1b2342bd6eda0d3b1732b25c853",
+        "manifest_sha256": "b35a2d4063e858342a1453a9b500d16278f0e01c91230e63afb7ea2e3118c57f",
+        "api_sha256": "af385076dbdf2d4be041e9d3f21a3d27cf44c566732e365b0856e2608e720c65",
+        "preflight_sha256": "7fb5758fc7248da2fb8cb445b8f4ab161375548dfd9b2b9ff3294a3bf5f7c7d7",
+        "cli_sha256": "03fc1bdbd1481ea154ee9e500c86088074130f3e2e58743a0183b394d1769744",
+        "api_source_revision": "source-b10eba8f78af7645e5ba",
+        "cli_source_revision": "source-b10eba8f78af7645e5ba",
+        "web_source_revision": "source-b10eba8f78af7645e5ba",
+        "web_build_id": "kfmLwqdFcv_W9VZ-cdIla",
+        "build_command_id": "95c55dac-fde9-472a-9c17-fff0e9c700b9",
+        "api_build_command_id": "95c55dac-fde9-472a-9c17-fff0e9c700b9",
+        "install_command_id": "50f227ca-8999-4c78-88e2-01adfc14882f",
+        "candidate_command_id": "ebe7775f-d0d0-4373-b8f8-7eaf0012b801",
+        "api_candidate_command_id": "ebe7775f-d0d0-4373-b8f8-7eaf0012b801",
+        "build_kind": "native-and-web",
+        "native_binaries_rebuilt": true,
+        "baseline_release": "source-5704352fc1fb2491997b",
+        "release_provenance_receipt": ".dev/production/2026-10-27-shared-home/staged-release.json"
+      },
+      "note": "Superseded by branding-only web release; native components reused unchanged."
     }
   ],
   "styling": {
