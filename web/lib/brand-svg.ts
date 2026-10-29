@@ -1,6 +1,6 @@
 /**
- * The app's mark as an SVG document, for the places that need a file rather than a component: the browser icon
- * (app/icon.tsx), the home-screen icon (app/apple-icon.tsx) and the Open Graph image (app/og.png). The glyph is
+ * The app's mark as an SVG document, for the places that need a file rather than a component: the install icon
+ * (app/icon/route.tsx), the home-screen icon (app/apple-icon.tsx) and the Open Graph image (app/og.png). The glyph is
  * the supplied calc-logo.svg, retaining its original 200 px framing and colours.
  * The system rounds a home-screen icon itself.
  */
