@@ -1,3 +1,5 @@
+/* ImageResponse renders SVG directly; next/image is not available in this image renderer. */
+/* eslint-disable @next/next/no-img-element */
 /** The tiled install icon. Browser tabs use the transparent, theme-aware app/icon.svg. */
 import { ImageResponse } from "next/og";
 import { markSvg, svgDataUri } from "@/lib/brand-svg";
