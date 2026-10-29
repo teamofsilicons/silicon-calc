@@ -1,6 +1,6 @@
 {
   "version": "0.2.0",
-  "verified_at": "2026-10-28T22:04:44.733511+00:00",
+  "verified_at": "2026-10-29T08:46:35.925597+00:00",
   "web_url": "https://calc.teamofsilicons.com",
   "api_url": "https://calc-api.teamofsilicons.com",
   "runtime": "native-systemd",
@@ -16,29 +16,29 @@
     "architecture": "arm64"
   },
   "release": {
-    "revision": "source-e4c6a3e88d63ebead1f7",
-    "base_git_revision": "a17a39335f6a388ea00ac0eb735ddea77acb89b7",
-    "source_archive_sha256": "4e907b1eb3e6fc48613c550b96a68d54b0440f5aefb79f00e492eed5d1efc71b",
-    "release_archive_sha256": "c797d34b496d7f29af551a2e724bfaef8bef58393084a5256c2d7987f7080762",
-    "manifest_sha256": "4b66407e5e6fd965e19bd2dae51459e61079df9928b7df02b310e064e779b496",
+    "revision": "source-2b9081c59296e376cf41",
+    "base_git_revision": "6c9ba12cb61c60424332d2212259366a2881864d",
+    "source_archive_sha256": "645a5c7312fe8298cbacdf851cb19ce1a924b929424ad9bdfeeaeff0905a50ee",
+    "release_archive_sha256": "4e35dfefd1f61dbdc3395ff488b4812fbf6a26e8138a4c53e84892050906f83a",
+    "manifest_sha256": "2625d6bb4f7967a4e40b4b727affea096878a3f5995f8877a8338e161d5ea9d8",
     "api_sha256": "af385076dbdf2d4be041e9d3f21a3d27cf44c566732e365b0856e2608e720c65",
     "preflight_sha256": "7fb5758fc7248da2fb8cb445b8f4ab161375548dfd9b2b9ff3294a3bf5f7c7d7",
     "cli_sha256": "03fc1bdbd1481ea154ee9e500c86088074130f3e2e58743a0183b394d1769744",
     "api_source_revision": "source-b10eba8f78af7645e5ba",
     "cli_source_revision": "source-b10eba8f78af7645e5ba",
-    "web_source_revision": "source-e4c6a3e88d63ebead1f7",
-    "web_build_id": "Q4ZeqJxY96TpmPNC8jk8z",
+    "web_source_revision": "source-2b9081c59296e376cf41",
+    "web_build_id": "dLUq12U8nmSDYG_2VlSVA",
     "build_command_id": null,
     "api_build_command_id": "95c55dac-fde9-472a-9c17-fff0e9c700b9",
-    "install_command_id": "acd28841-12cc-4dd6-a6ca-522f13ee709c",
-    "candidate_command_id": "ce01c47a-f213-445d-a5b4-0c1b7beaaf8e",
+    "install_command_id": "b2ab874f-d019-4b9e-ad27-e40efbff824e",
+    "candidate_command_id": "dc36ef06-aafb-4f6c-b3a1-c093a3964267",
     "api_candidate_command_id": "ebe7775f-d0d0-4373-b8f8-7eaf0012b801",
     "build_kind": "web-only",
     "native_binaries_rebuilt": false,
-    "baseline_release": "source-b10eba8f78af7645e5ba",
-    "release_provenance_receipt": "deploy/logo-verification-20261029.json",
+    "baseline_release": "source-e4c6a3e88d63ebead1f7",
+    "release_provenance_receipt": "deploy/favicon-verification-20261029.json",
     "build_platform": "linux/arm64 container on local Mac",
-    "stage_command_id": "5e396c16-fe1c-4126-82e7-3a08b0c49861"
+    "stage_command_id": "9b45ff23-d2cb-43ee-86ab-c53e404889de"
   },
   "commands": {
     "language": "javascript",
@@ -199,6 +199,10 @@
       "receipt": "deploy/logo-verification-20261029.json",
       "evidence": ".dev/logo-20261029",
       "scope": "New logo; other verification entries refer to their original release evidence."
+    },
+    "favicon_release": {
+      "receipt": "deploy/favicon-verification-20261029.json",
+      "evidence": ".dev/favicon-20261029"
     }
   },
   "backups": {
@@ -608,6 +612,35 @@
         "release_provenance_receipt": ".dev/production/2026-10-27-shared-home/staged-release.json"
       },
       "note": "Superseded by branding-only web release; native components reused unchanged."
+    },
+    {
+      "verified_at": "2026-10-28T22:04:44.733511+00:00",
+      "release": {
+        "revision": "source-e4c6a3e88d63ebead1f7",
+        "base_git_revision": "a17a39335f6a388ea00ac0eb735ddea77acb89b7",
+        "source_archive_sha256": "4e907b1eb3e6fc48613c550b96a68d54b0440f5aefb79f00e492eed5d1efc71b",
+        "release_archive_sha256": "c797d34b496d7f29af551a2e724bfaef8bef58393084a5256c2d7987f7080762",
+        "manifest_sha256": "4b66407e5e6fd965e19bd2dae51459e61079df9928b7df02b310e064e779b496",
+        "api_sha256": "af385076dbdf2d4be041e9d3f21a3d27cf44c566732e365b0856e2608e720c65",
+        "preflight_sha256": "7fb5758fc7248da2fb8cb445b8f4ab161375548dfd9b2b9ff3294a3bf5f7c7d7",
+        "cli_sha256": "03fc1bdbd1481ea154ee9e500c86088074130f3e2e58743a0183b394d1769744",
+        "api_source_revision": "source-b10eba8f78af7645e5ba",
+        "cli_source_revision": "source-b10eba8f78af7645e5ba",
+        "web_source_revision": "source-e4c6a3e88d63ebead1f7",
+        "web_build_id": "Q4ZeqJxY96TpmPNC8jk8z",
+        "build_command_id": null,
+        "api_build_command_id": "95c55dac-fde9-472a-9c17-fff0e9c700b9",
+        "install_command_id": "acd28841-12cc-4dd6-a6ca-522f13ee709c",
+        "candidate_command_id": "ce01c47a-f213-445d-a5b4-0c1b7beaaf8e",
+        "api_candidate_command_id": "ebe7775f-d0d0-4373-b8f8-7eaf0012b801",
+        "build_kind": "web-only",
+        "native_binaries_rebuilt": false,
+        "baseline_release": "source-b10eba8f78af7645e5ba",
+        "release_provenance_receipt": "deploy/logo-verification-20261029.json",
+        "build_platform": "linux/arm64 container on local Mac",
+        "stage_command_id": "5e396c16-fe1c-4126-82e7-3a08b0c49861"
+      },
+      "note": "Superseded by transparent favicon web release."
     }
   ],
   "styling": {

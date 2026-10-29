@@ -1,0 +1,22 @@
+{
+  "verified_at": "2026-10-29T08:46:35.925597+00:00",
+  "source_revision": "6c9ba12cb61c60424332d2212259366a2881864d",
+  "release": "source-2b9081c59296e376cf41",
+  "url": "https://calc.teamofsilicons.com",
+  "favicon_href": "/icon.svg?icon.031x5x75__jb_.svg",
+  "favicon_sha256": "0ce4838004e304fa7c6c0a7342d8c69ca3e59e17512912b449187c20c75e1645",
+  "favicon": "Transparent, tightly cropped mark using Developers light and dark ink colors.",
+  "install_and_share_icons": "Existing tiled artwork preserved.",
+  "checks": {
+    "typecheck": "passed",
+    "lint": "passed",
+    "unit_tests": 56,
+    "build": "passed",
+    "public_browser_tests": 2,
+    "candidate_and_live_routing": "passed",
+    "light_and_dark_rendering": "passed",
+    "live_svg_matches_source": true
+  },
+  "native_binaries_changed": false,
+  "evidence": ".dev/favicon-20261029"
+}
