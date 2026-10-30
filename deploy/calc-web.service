@@ -33,7 +33,10 @@ CapabilityBoundingSet=
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 CacheDirectory=silicon-calc-web
 CacheDirectoryMode=0700
-ReadWritePaths=/var/cache/silicon-calc-web
+StateDirectory=calc-browser-sessions
+StateDirectoryMode=0700
+Environment=REFRESH_STATE_PATH=/var/lib/calc-browser-sessions/state.sqlite
+ReadWritePaths=/var/cache/silicon-calc-web /var/lib/calc-browser-sessions
 LimitNOFILE=65536
 TasksMax=256
 MemoryHigh=768M
